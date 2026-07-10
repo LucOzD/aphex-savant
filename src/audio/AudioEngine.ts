@@ -194,6 +194,11 @@ export class AudioEngine {
     return decodeAudio(this.ctx, await file.arrayBuffer());
   }
 
+  /** Decode a file into an AudioBuffer without assigning it anywhere. */
+  async decodeToBuffer(file: File): Promise<AudioBuffer> {
+    return this.decodeFile(file);
+  }
+
   /** Auto-slice a decoded buffer by transients and spread over the sample pads. */
   sliceBufferAcrossPads(buffer: AudioBuffer): number {
     const tracks = this.banks[this.sampleBankIndex].tracks;
@@ -213,6 +218,50 @@ export class AudioEngine {
     if (track) {
       track.setBuffer(buffer, null);
       track.settings.name = name;
+    }
+  }
+
+  /** Assign a manually-selected [start,end] region of a buffer to a sample pad. */
+  assignRegionToPad(
+    padIndex: number,
+    buffer: AudioBuffer,
+    start: number,
+    end: number,
+    name = "slice",
+  ) {
+    const track = this.banks[this.sampleBankIndex].tracks[padIndex];
+    if (track) {
+      track.setBuffer(buffer, [start, end]);
+      track.settings.name = name;
+    }
+  }
+
+  // ---- Region preview (for the sample editor) -----------------------------
+
+  private previewSource: AudioBufferSourceNode | null = null;
+
+  /** Audition a region of a buffer through the master chain. */
+  previewRegion(buffer: AudioBuffer, start: number, end: number) {
+    this.stopPreview();
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(this.master.input);
+    const duration = Math.max(0.02, end - start);
+    src.start(this.ctx.currentTime + 0.005, start, duration);
+    this.previewSource = src;
+    src.onended = () => {
+      if (this.previewSource === src) this.previewSource = null;
+    };
+  }
+
+  stopPreview() {
+    if (this.previewSource) {
+      try {
+        this.previewSource.stop();
+      } catch {
+        /* already stopped */
+      }
+      this.previewSource = null;
     }
   }
 

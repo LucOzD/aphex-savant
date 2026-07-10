@@ -1,6 +1,7 @@
 import type { AudioEngine } from "../audio/AudioEngine.ts";
 import type { Track } from "../audio/Track.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
+import { WaveformEditor } from "./WaveformEditor.ts";
 import { el, slider } from "./dom.ts";
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
@@ -22,6 +23,12 @@ export class App {
   private trackPanel!: HTMLElement;
   private stepPanel!: HTMLElement;
 
+  // Sample editor.
+  private editor = new WaveformEditor();
+  private editorBuffer: AudioBuffer | null = null;
+  private editorReadout!: HTMLElement;
+  private editorTarget!: HTMLSelectElement;
+
   constructor(engine: AudioEngine, root: HTMLElement) {
     this.engine = engine;
     this.root = root;
@@ -41,10 +48,13 @@ export class App {
       this.buildMasterPanel(),
       this.buildPerformance(),
       this.buildSampleTools(),
+      this.buildSampleEditor(),
     );
     this.root.append(main);
     this.renderPads();
     this.refreshSelection();
+    // Draw the (empty) waveform once it has a real width.
+    requestAnimationFrame(() => this.editor.redraw());
   }
 
   // ---- Convenience --------------------------------------------------------
@@ -557,6 +567,90 @@ export class App {
     this.refreshBankButtons();
   }
 
+  // ---- Sample editor (waveform + slice markers) ---------------------------
+
+  private buildSampleEditor(): HTMLElement {
+    this.editorReadout = el("span", { class: "hint" }, ["no sample loaded"]);
+
+    this.editor.onChange = () => this.refreshEditorReadout();
+
+    // Open a file directly into the editor.
+    const fileInput = el("input", {
+      type: "file",
+      accept: "audio/*",
+      style: "display:none",
+    }) as HTMLInputElement;
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      const buf = await this.engine.decodeToBuffer(file);
+      this.setEditorBuffer(buf);
+    });
+    const openBtn = el("button", { class: "ctrl" }, ["Open file…"]);
+    openBtn.addEventListener("click", () => fileInput.click());
+
+    // Use whatever the last recording was.
+    const useRecBtn = el("button", { class: "ctrl" }, ["Use last recording"]);
+    useRecBtn.addEventListener("click", () => {
+      if (this.engine.lastRecording) this.setEditorBuffer(this.engine.lastRecording);
+    });
+
+    // Preview the selected region.
+    const previewBtn = el("button", { class: "ctrl" }, ["▶ Preview"]);
+    previewBtn.addEventListener("click", () => {
+      if (!this.editorBuffer) return;
+      const [s, e] = this.editor.getRegion();
+      this.engine.previewRegion(this.editorBuffer, s, e);
+    });
+
+    // Target sample pad picker.
+    this.editorTarget = el("select", { class: "ctrl" }) as HTMLSelectElement;
+    const sampleTracks = this.engine.banks[this.engine.sampleBankIndex].tracks;
+    sampleTracks.forEach((_, i) => {
+      this.editorTarget.append(el("option", { value: String(i) }, [`pad ${i + 1}`]));
+    });
+
+    // Assign the selection to the chosen sample pad.
+    const assignBtn = el("button", { class: "ctrl active" }, ["Assign to pad"]);
+    assignBtn.addEventListener("click", () => {
+      if (!this.editorBuffer) return;
+      const pad = Number(this.editorTarget.value);
+      const [s, e] = this.editor.getRegion();
+      this.engine.assignRegionToPad(pad, this.editorBuffer, s, e, `slice ${pad + 1}`);
+      this.showSampleBank(pad);
+      this.engine.previewRegion(this.editorBuffer, s, e);
+    });
+
+    return el("section", {}, [
+      el("h2", { class: "section-title" }, ["Sample editor — drag to select a moment"]),
+      this.editor.root,
+      el("div", { class: "row" }, [this.editorReadout]),
+      el("div", { class: "row" }, [openBtn, useRecBtn, previewBtn, fileInput]),
+      el("div", { class: "row" }, [
+        el("span", { class: "hint" }, ["→ target"]),
+        this.editorTarget,
+        assignBtn,
+      ]),
+    ]);
+  }
+
+  private setEditorBuffer(buffer: AudioBuffer) {
+    this.editorBuffer = buffer;
+    this.editor.setBuffer(buffer);
+    this.refreshEditorReadout();
+  }
+
+  private refreshEditorReadout() {
+    if (!this.editorBuffer) {
+      this.editorReadout.textContent = "no sample loaded";
+      return;
+    }
+    const [s, e] = this.editor.getRegion();
+    this.editorReadout.textContent = `selection ${s.toFixed(3)}s – ${e.toFixed(3)}s  (${(
+      e - s
+    ).toFixed(3)}s)`;
+  }
+
   // ---- Mic recording UI ---------------------------------------------------
 
   private buildRecorder(): HTMLElement {
@@ -595,6 +689,7 @@ export class App {
           status.textContent = `recorded ${buf.duration.toFixed(1)}s`;
           chopRecBtn.disabled = false;
           padRecBtn.disabled = false;
+          this.setEditorBuffer(buf); // load the take into the waveform editor
         } catch (err) {
           console.error(err);
           status.textContent = "recording failed";

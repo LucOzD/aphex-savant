@@ -35,6 +35,10 @@ us start audio (especially on iOS).
 - **Performance buttons**: momentary FILTER slam and CRUSH slam (hold to apply).
 - **Record from the mic** (getUserMedia + MediaRecorder), then chop the take
   across the SAMPLES bank or drop it on a single sample pad.
+- **Sample editor**: a waveform view where you drag to select an exact moment
+  (draggable start/end handles), preview the selection, and assign that region
+  to any sample pad. Recordings load into it automatically; you can also open a
+  file or reuse the last recording.
 - **Samples**: "Chop → samples" auto-slices a loop by **transient detection**
   and spreads slices across the sample pads; "Load → sample pad" loads a whole
   file onto one sample pad.
