@@ -160,6 +160,11 @@ main {
   line-height: 1.1;
   transition: transform 0.04s, background 0.08s;
 }
+.pad.empty {
+  color: var(--muted);
+  border-style: dashed;
+  background: #14141c;
+}
 .pad.selected {
   border-color: var(--accent-2);
 }

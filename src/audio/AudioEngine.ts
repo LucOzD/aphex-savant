@@ -5,16 +5,39 @@ import { generateDrumKit, drumName } from "./synthDrums.ts";
 import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
 import { Recorder } from "./Recorder.ts";
 
-export interface EngineConfig {
-  trackCount: number;
-  steps: number;
+export type BankKind = "synth" | "sample";
+
+export interface BankConfig {
+  name: string;
+  pads: number;
+  kind: BankKind;
 }
 
-/** Top-level audio engine: owns the context, master chain, tracks, transport. */
+export interface EngineConfig {
+  steps: number;
+  banks: BankConfig[];
+}
+
+/** A group of pads/tracks shown together (e.g. DRUMS vs SAMPLES). */
+export interface Bank {
+  name: string;
+  kind: BankKind;
+  tracks: Track[];
+}
+
+const DEFAULT_CONFIG: EngineConfig = {
+  steps: 16,
+  banks: [
+    { name: "DRUMS", pads: 16, kind: "synth" },
+    { name: "SAMPLES", pads: 16, kind: "sample" },
+  ],
+};
+
+/** Top-level audio engine: owns the context, master chain, banks, transport. */
 export class AudioEngine {
   readonly ctx: AudioContext;
   master!: MasterChain;
-  readonly tracks: Track[] = [];
+  readonly banks: Bank[] = [];
   readonly scheduler: Scheduler;
   readonly config: EngineConfig;
   readonly recorder = new Recorder();
@@ -27,7 +50,7 @@ export class AudioEngine {
   /** UI hook: fired (on the main thread) when the playhead reaches a step. */
   onVisualStep: (step: number) => void = () => {};
 
-  constructor(config: EngineConfig = { trackCount: 16, steps: 16 }) {
+  constructor(config: EngineConfig = DEFAULT_CONFIG) {
     this.config = config;
     this.ctx = new AudioContext({ latencyHint: "interactive" });
     this.scheduler = new Scheduler(this.ctx);
@@ -56,15 +79,19 @@ export class AudioEngine {
     this.master = new MasterChain(this.ctx, crushNode);
     this.updateDelayTime();
 
-    // Build tracks and load them with the default synth kit.
-    const kit = generateDrumKit(this.ctx, this.config.trackCount);
-    for (let i = 0; i < this.config.trackCount; i++) {
-      const track = new Track(this.ctx, this.master, this.config.steps, {
-        name: drumName(i),
-        chokeGroup: i % 8 === 2 ? 1 : 0, // hats choke each other by default
-      });
-      track.setBuffer(kit[i]);
-      this.tracks.push(track);
+    for (const bankCfg of this.config.banks) {
+      const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [] };
+      const kit = bankCfg.kind === "synth" ? generateDrumKit(this.ctx, bankCfg.pads) : null;
+      for (let i = 0; i < bankCfg.pads; i++) {
+        const track = new Track(this.ctx, this.master, this.config.steps, {
+          name: kit ? drumName(i) : "empty",
+          // Synth hats choke each other by default; sample pads don't choke.
+          chokeGroup: kit && i % 8 === 2 ? 1 : 0,
+        });
+        if (kit) track.setBuffer(kit[i]);
+        bank.tracks.push(track);
+      }
+      this.banks.push(bank);
     }
 
     this.started = true;
@@ -72,6 +99,21 @@ export class AudioEngine {
 
   get isReady(): boolean {
     return this.started;
+  }
+
+  /** Every track across all banks (for scheduling). */
+  get allTracks(): Track[] {
+    return this.banks.flatMap((b) => b.tracks);
+  }
+
+  /** Index of the first sample bank (where recordings/loads go). */
+  get sampleBankIndex(): number {
+    const idx = this.banks.findIndex((b) => b.kind === "sample");
+    return idx >= 0 ? idx : this.banks.length - 1;
+  }
+
+  get steps(): number {
+    return this.config.steps;
   }
 
   // ---- Transport ----------------------------------------------------------
@@ -115,14 +157,14 @@ export class AudioEngine {
   // ---- Playback -----------------------------------------------------------
 
   /** Live-play a pad immediately (finger drumming). */
-  padHit(trackIndex: number, velocity = 1) {
-    const track = this.tracks[trackIndex];
+  padHit(bankIndex: number, padIndex: number, velocity = 1) {
+    const track = this.banks[bankIndex]?.tracks[padIndex];
     if (!track) return;
     track.trigger(this.ctx.currentTime + 0.005, 0, velocity);
   }
 
   private handleStep(step: number, time: number) {
-    for (const track of this.tracks) {
+    for (const track of this.allTracks) {
       const s = track.steps[step];
       if (!s || !s.on) continue;
       if (s.probability < 1 && Math.random() > s.probability) continue;
@@ -133,40 +175,41 @@ export class AudioEngine {
     window.setTimeout(() => this.onVisualStep(step), delayMs);
   }
 
-  // ---- Sample loading -----------------------------------------------------
+  // ---- Sample loading (always targets the SAMPLES bank) -------------------
 
-  /** Decode a user file and slice it across the pads by transients. */
+  /** Decode a user file and slice it across the sample pads by transients. */
   async loadAndSlice(file: File): Promise<number> {
     const buffer = await this.decodeFile(file);
     return this.sliceBufferAcrossPads(buffer);
   }
 
-  /** Load a single file onto one pad (whole sample, no slicing). */
-  async loadOntoPad(trackIndex: number, file: File): Promise<void> {
+  /** Load a single file onto one sample pad (whole sample, no slicing). */
+  async loadOntoPad(padIndex: number, file: File): Promise<void> {
     const buffer = await this.decodeFile(file);
     const name = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
-    this.loadBufferOntoPad(trackIndex, buffer, name);
+    this.loadBufferOntoPad(padIndex, buffer, name);
   }
 
   private async decodeFile(file: File): Promise<AudioBuffer> {
     return decodeAudio(this.ctx, await file.arrayBuffer());
   }
 
-  /** Auto-slice a decoded buffer by transients and spread it over the pads. */
+  /** Auto-slice a decoded buffer by transients and spread over the sample pads. */
   sliceBufferAcrossPads(buffer: AudioBuffer): number {
-    const slices = sliceByTransients(buffer, this.config.trackCount);
+    const tracks = this.banks[this.sampleBankIndex].tracks;
+    const slices = sliceByTransients(buffer, tracks.length);
     slices.forEach((region, i) => {
-      if (this.tracks[i]) {
-        this.tracks[i].setBuffer(buffer, region);
-        this.tracks[i].settings.name = `slice ${i + 1}`;
+      if (tracks[i]) {
+        tracks[i].setBuffer(buffer, region);
+        tracks[i].settings.name = `slice ${i + 1}`;
       }
     });
     return slices.length;
   }
 
-  /** Put a whole decoded buffer onto one pad. */
-  loadBufferOntoPad(trackIndex: number, buffer: AudioBuffer, name = "sample") {
-    const track = this.tracks[trackIndex];
+  /** Put a whole decoded buffer onto one sample pad. */
+  loadBufferOntoPad(padIndex: number, buffer: AudioBuffer, name = "sample") {
+    const track = this.banks[this.sampleBankIndex].tracks[padIndex];
     if (track) {
       track.setBuffer(buffer, null);
       track.settings.name = name;

@@ -1,4 +1,5 @@
 import type { AudioEngine } from "../audio/AudioEngine.ts";
+import type { Track } from "../audio/Track.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
 import { el, slider } from "./dom.ts";
 
@@ -7,11 +8,14 @@ export class App {
   private engine: AudioEngine;
   private root: HTMLElement;
 
-  private selectedTrack = 0;
+  private selectedBank = 0;
+  private selectedPad = 0;
   private selectedStep = 0;
   private plockMode = false;
 
   // Cached elements we need to update as playback / selection changes.
+  private bankBtns: HTMLButtonElement[] = [];
+  private padGrid!: HTMLElement;
   private padEls: HTMLButtonElement[] = [];
   private stepEls: HTMLButtonElement[] = [];
   private lastPlayhead = -1;
@@ -29,6 +33,7 @@ export class App {
     this.root.append(this.buildTopbar());
     const main = el("main");
     main.append(
+      this.buildBankSwitcher(),
       this.buildPads(),
       this.buildSequencer(),
       this.buildStepPanel(),
@@ -38,8 +43,17 @@ export class App {
       this.buildSampleTools(),
     );
     this.root.append(main);
-    this.refreshSteps();
+    this.renderPads();
     this.refreshSelection();
+  }
+
+  // ---- Convenience --------------------------------------------------------
+
+  private bank() {
+    return this.engine.banks[this.selectedBank];
+  }
+  private track(): Track | undefined {
+    return this.bank()?.tracks[this.selectedPad];
   }
 
   // ---- Topbar / transport -------------------------------------------------
@@ -86,20 +100,56 @@ export class App {
     ]);
   }
 
+  // ---- Bank switcher ------------------------------------------------------
+
+  private buildBankSwitcher(): HTMLElement {
+    this.bankBtns = [];
+    const row = el("div", { class: "row" });
+    this.engine.banks.forEach((b, i) => {
+      const btn = el("button", { class: "ctrl" }, [b.name]) as HTMLButtonElement;
+      btn.addEventListener("click", () => this.selectBank(i));
+      this.bankBtns.push(btn);
+      row.append(btn);
+    });
+    return el("section", {}, [
+      el("h2", { class: "section-title" }, ["Bank"]),
+      row,
+    ]);
+  }
+
+  private selectBank(i: number) {
+    if (i === this.selectedBank) return;
+    this.selectedBank = i;
+    this.selectedPad = 0;
+    this.renderPads();
+    this.refreshSelection();
+  }
+
   // ---- Pad grid -----------------------------------------------------------
 
   private buildPads(): HTMLElement {
-    const grid = el("div", { class: "pads" });
+    this.padGrid = el("div", { class: "pads" });
+    return el("section", {}, [
+      el("h2", { class: "section-title" }, ["Pads — tap to play, selects pad"]),
+      this.padGrid,
+    ]);
+  }
+
+  /** (Re)build the pad buttons for the currently selected bank. */
+  private renderPads() {
+    this.padGrid.innerHTML = "";
     this.padEls = [];
-    for (let i = 0; i < this.engine.config.trackCount; i++) {
+    const tracks = this.bank()?.tracks ?? [];
+    tracks.forEach((track, i) => {
       const pad = el("button", { class: "pad" }, [
-        el("span", {}, [this.engine.tracks[i]?.settings.name ?? `pad ${i + 1}`]),
+        el("span", {}, [track.settings.name]),
       ]) as HTMLButtonElement;
+      if (!track.buffer) pad.classList.add("empty");
 
       pad.addEventListener("pointerdown", (e) => {
         e.preventDefault();
-        this.selectTrack(i);
-        this.engine.padHit(i, 1);
+        this.selectPad(i);
+        this.engine.padHit(this.selectedBank, i, 1);
         pad.classList.add("flash");
       });
       const clearFlash = () => pad.classList.remove("flash");
@@ -108,12 +158,13 @@ export class App {
       pad.addEventListener("pointercancel", clearFlash);
 
       this.padEls.push(pad);
-      grid.append(pad);
-    }
-    return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Pads — tap to play, selects track"]),
-      grid,
-    ]);
+      this.padGrid.append(pad);
+    });
+  }
+
+  private selectPad(i: number) {
+    this.selectedPad = i;
+    this.refreshSelection();
   }
 
   // ---- Step sequencer -----------------------------------------------------
@@ -123,11 +174,12 @@ export class App {
     plockBtn.addEventListener("click", () => {
       this.plockMode = !this.plockMode;
       plockBtn.classList.toggle("active", this.plockMode);
+      this.refreshSteps();
     });
 
     const grid = el("div", { class: "steps" });
     this.stepEls = [];
-    for (let i = 0; i < this.engine.config.steps; i++) {
+    for (let i = 0; i < this.engine.steps; i++) {
       const step = el("button", {
         class: i % 4 === 0 ? "step beat" : "step",
       }) as HTMLButtonElement;
@@ -149,7 +201,7 @@ export class App {
   }
 
   private onStepTap(i: number) {
-    const track = this.engine.tracks[this.selectedTrack];
+    const track = this.track();
     if (!track) return;
     if (this.plockMode) {
       this.selectedStep = i;
@@ -173,7 +225,7 @@ export class App {
   }
 
   private refreshStepPanel() {
-    const track = this.engine.tracks[this.selectedTrack];
+    const track = this.track();
     this.stepPanel.innerHTML = "";
     if (!track) return;
     const step = track.steps[this.selectedStep];
@@ -226,7 +278,7 @@ export class App {
   }
 
   private refreshTrackPanel() {
-    const track = this.engine.tracks[this.selectedTrack];
+    const track = this.track();
     this.trackPanel.innerHTML = "";
     if (!track) return;
     const s = track.settings;
@@ -409,7 +461,6 @@ export class App {
   // ---- Momentary performance FX ------------------------------------------
 
   private buildPerformance(): HTMLElement {
-    // Held buttons that momentarily slam the master chain, then restore.
     const filterBtn = this.makePerfButton("FILTER", {
       on: () => this.engine.master.setFilter(400, 6),
       off: () => this.engine.master.setFilter(20000, 0.7),
@@ -459,11 +510,10 @@ export class App {
       const file = chopInput.files?.[0];
       if (!file) return;
       const n = await this.engine.loadAndSlice(file);
-      this.refreshPadLabels();
-      this.refreshTrackPanel();
-      alert(`Chopped into ${n} slices across the pads.`);
+      this.showSampleBank();
+      alert(`Chopped into ${n} slices across the SAMPLES bank.`);
     });
-    const chopBtn = el("button", { class: "ctrl" }, ["Chop file → pads"]);
+    const chopBtn = el("button", { class: "ctrl" }, ["Chop file → samples"]);
     chopBtn.addEventListener("click", () => chopInput.click());
 
     const padInput = el("input", {
@@ -474,11 +524,11 @@ export class App {
     padInput.addEventListener("change", async () => {
       const file = padInput.files?.[0];
       if (!file) return;
-      await this.engine.loadOntoPad(this.selectedTrack, file);
-      this.refreshPadLabels();
-      this.refreshTrackPanel();
+      const pad = this.sampleTargetPad();
+      await this.engine.loadOntoPad(pad, file);
+      this.showSampleBank(pad);
     });
-    const padBtn = el("button", { class: "ctrl" }, ["Load → selected pad"]);
+    const padBtn = el("button", { class: "ctrl" }, ["Load file → sample pad"]);
     padBtn.addEventListener("click", () => padInput.click());
 
     return el("section", {}, [
@@ -486,10 +536,25 @@ export class App {
       this.buildRecorder(),
       el("div", { class: "row" }, [chopBtn, padBtn, chopInput, padInput]),
       el("p", { class: "hint" }, [
-        "Record from your mic, or load a file. Chop uses transient detection to " +
-          "auto-slice across all pads.",
+        "Recordings and loaded files go to the SAMPLES bank — your drum kit is " +
+          "left untouched. Chop uses transient detection to auto-slice across the " +
+          "sample pads.",
       ]),
     ]);
+  }
+
+  /** Which sample pad to load onto: the selected one if we're on the sample bank. */
+  private sampleTargetPad(): number {
+    return this.selectedBank === this.engine.sampleBankIndex ? this.selectedPad : 0;
+  }
+
+  /** Switch the view to the SAMPLES bank and refresh everything. */
+  private showSampleBank(pad = 0) {
+    this.selectedBank = this.engine.sampleBankIndex;
+    this.selectedPad = pad;
+    this.renderPads();
+    this.refreshSelection();
+    this.refreshBankButtons();
   }
 
   // ---- Mic recording UI ---------------------------------------------------
@@ -504,12 +569,11 @@ export class App {
     const recBtn = el("button", { class: "ctrl" }, ["● Record"]) as HTMLButtonElement;
     const status = el("span", { class: "hint" }, ["ready"]);
 
-    // Actions available once a take exists.
     const chopRecBtn = el("button", { class: "ctrl" }, [
-      "Chop recording → pads",
+      "Chop recording → samples",
     ]) as HTMLButtonElement;
     const padRecBtn = el("button", { class: "ctrl" }, [
-      "Recording → selected pad",
+      "Recording → sample pad",
     ]) as HTMLButtonElement;
     chopRecBtn.disabled = true;
     padRecBtn.disabled = true;
@@ -523,7 +587,6 @@ export class App {
 
     recBtn.addEventListener("click", async () => {
       if (this.engine.isRecording) {
-        // Stop + decode.
         recBtn.disabled = true;
         status.textContent = "processing…";
         if (timer !== null) window.clearInterval(timer);
@@ -540,7 +603,6 @@ export class App {
         recBtn.textContent = "● Record";
         recBtn.classList.remove("active");
       } else {
-        // Start.
         try {
           await this.engine.startRecording();
         } catch (err) {
@@ -558,17 +620,16 @@ export class App {
     chopRecBtn.addEventListener("click", () => {
       if (!this.engine.lastRecording) return;
       const n = this.engine.sliceBufferAcrossPads(this.engine.lastRecording);
-      this.refreshPadLabels();
-      this.refreshTrackPanel();
+      this.showSampleBank();
       status.textContent = `chopped into ${n} slices`;
     });
 
     padRecBtn.addEventListener("click", () => {
       if (!this.engine.lastRecording) return;
-      this.engine.loadBufferOntoPad(this.selectedTrack, this.engine.lastRecording, "recording");
-      this.refreshPadLabels();
-      this.refreshTrackPanel();
-      status.textContent = `loaded onto ${this.engine.tracks[this.selectedTrack]?.settings.name}`;
+      const pad = this.sampleTargetPad();
+      this.engine.loadBufferOntoPad(pad, this.engine.lastRecording, "recording");
+      this.showSampleBank(pad);
+      status.textContent = "loaded onto sample pad";
     });
 
     return el("div", { class: "panel" }, [
@@ -579,32 +640,24 @@ export class App {
 
   // ---- Selection + refresh helpers ---------------------------------------
 
-  private selectTrack(i: number) {
-    this.selectedTrack = i;
-    this.selectedStep = Math.min(this.selectedStep, this.engine.config.steps - 1);
-    this.refreshSelection();
+  private refreshBankButtons() {
+    this.bankBtns.forEach((b, i) => b.classList.toggle("active", i === this.selectedBank));
   }
 
   private refreshSelection() {
-    this.padEls.forEach((p, i) => p.classList.toggle("selected", i === this.selectedTrack));
+    this.refreshBankButtons();
+    this.padEls.forEach((p, i) => p.classList.toggle("selected", i === this.selectedPad));
     this.refreshSteps();
     this.refreshStepPanel();
     this.refreshTrackPanel();
   }
 
   private refreshSteps() {
-    const track = this.engine.tracks[this.selectedTrack];
+    const track = this.track();
     if (!track) return;
     this.stepEls.forEach((cell, i) => {
       cell.classList.toggle("on", track.steps[i].on);
       cell.classList.toggle("selected", this.plockMode && i === this.selectedStep);
-    });
-  }
-
-  private refreshPadLabels() {
-    this.padEls.forEach((pad, i) => {
-      const span = pad.querySelector("span");
-      if (span) span.textContent = this.engine.tracks[i]?.settings.name ?? `pad ${i + 1}`;
     });
   }
 

@@ -20,7 +20,7 @@ function showStartOverlay() {
     "click",
     async () => {
       startBtn.textContent = "loading…";
-      const engine = new AudioEngine({ trackCount: 16, steps: 16 });
+      const engine = new AudioEngine();
       engine.bpm = 120;
       try {
         await engine.init();

@@ -19,8 +19,11 @@ us start audio (especially on iOS).
 
 - **Audio engine** — Web Audio graph with a proper master chain and shared FX
   sends (see routing below).
-- **16 pads** in a 4×4 grid, each a track with its own sound. They ship with a
-  built-in synthesized drum kit so it makes noise immediately.
+- **Two banks** you switch between: a **DRUMS** bank (built-in synth kit, makes
+  noise immediately) and a separate **SAMPLES** bank that recordings and loaded
+  files go into — so importing audio never overwrites your drum kit. Both banks
+  play and sequence together.
+- **16 pads** per bank in a 4×4 grid, each a track with its own sound.
 - **Tap pads** to finger-drum; tapping also selects a pad for editing.
 - **16-step sequencer** per pad with a lookahead scheduler for tight timing,
   plus **swing** and **tempo**.
@@ -30,8 +33,11 @@ us start audio (especially on iOS).
 - **Master FX**: bitcrusher + sample-rate reducer (AudioWorklet), master filter,
   drive/saturation, tempo-synced delay feedback, and a limiter on the output.
 - **Performance buttons**: momentary FILTER slam and CRUSH slam (hold to apply).
-- **Samples**: "Chop file → pads" auto-slices a loop by **transient detection**
-  and spreads slices across the pads; "Load → selected pad" loads a whole file.
+- **Record from the mic** (getUserMedia + MediaRecorder), then chop the take
+  across the SAMPLES bank or drop it on a single sample pad.
+- **Samples**: "Chop → samples" auto-slices a loop by **transient detection**
+  and spreads slices across the sample pads; "Load → sample pad" loads a whole
+  file onto one sample pad.
 - **PWA**: installable to the home screen, works offline after first load.
 
 ## Signal routing
