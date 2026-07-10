@@ -3,6 +3,7 @@ import { Scheduler } from "./Scheduler.ts";
 import { Track } from "./Track.ts";
 import { generateDrumKit, drumName } from "./synthDrums.ts";
 import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
+import { Recorder } from "./Recorder.ts";
 
 export interface EngineConfig {
   trackCount: number;
@@ -16,6 +17,10 @@ export class AudioEngine {
   readonly tracks: Track[] = [];
   readonly scheduler: Scheduler;
   readonly config: EngineConfig;
+  readonly recorder = new Recorder();
+
+  /** The most recent mic recording, kept so it can be chopped or reassigned. */
+  lastRecording: AudioBuffer | null = null;
 
   private started = false;
 
@@ -132,8 +137,23 @@ export class AudioEngine {
 
   /** Decode a user file and slice it across the pads by transients. */
   async loadAndSlice(file: File): Promise<number> {
-    const data = await file.arrayBuffer();
-    const buffer = await decodeAudio(this.ctx, data);
+    const buffer = await this.decodeFile(file);
+    return this.sliceBufferAcrossPads(buffer);
+  }
+
+  /** Load a single file onto one pad (whole sample, no slicing). */
+  async loadOntoPad(trackIndex: number, file: File): Promise<void> {
+    const buffer = await this.decodeFile(file);
+    const name = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
+    this.loadBufferOntoPad(trackIndex, buffer, name);
+  }
+
+  private async decodeFile(file: File): Promise<AudioBuffer> {
+    return decodeAudio(this.ctx, await file.arrayBuffer());
+  }
+
+  /** Auto-slice a decoded buffer by transients and spread it over the pads. */
+  sliceBufferAcrossPads(buffer: AudioBuffer): number {
     const slices = sliceByTransients(buffer, this.config.trackCount);
     slices.forEach((region, i) => {
       if (this.tracks[i]) {
@@ -144,14 +164,32 @@ export class AudioEngine {
     return slices.length;
   }
 
-  /** Load a single file onto one pad (whole sample, no slicing). */
-  async loadOntoPad(trackIndex: number, file: File): Promise<void> {
-    const data = await file.arrayBuffer();
-    const buffer = await decodeAudio(this.ctx, data);
+  /** Put a whole decoded buffer onto one pad. */
+  loadBufferOntoPad(trackIndex: number, buffer: AudioBuffer, name = "sample") {
     const track = this.tracks[trackIndex];
     if (track) {
       track.setBuffer(buffer, null);
-      track.settings.name = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
+      track.settings.name = name;
     }
+  }
+
+  // ---- Mic recording ------------------------------------------------------
+
+  get isRecording(): boolean {
+    return this.recorder.recording;
+  }
+
+  /** Begin capturing from the microphone. Throws if permission is denied. */
+  async startRecording(): Promise<void> {
+    await this.ctx.resume();
+    await this.recorder.start();
+  }
+
+  /** Stop capturing, decode the take, store it, and return the AudioBuffer. */
+  async stopRecording(): Promise<AudioBuffer> {
+    const blob = await this.recorder.stop();
+    const buffer = await decodeAudio(this.ctx, await blob.arrayBuffer());
+    this.lastRecording = buffer;
+    return buffer;
   }
 }

@@ -1,4 +1,5 @@
 import type { AudioEngine } from "../audio/AudioEngine.ts";
+import { isRecordingSupported } from "../audio/Recorder.ts";
 import { el, slider } from "./dom.ts";
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
@@ -482,10 +483,97 @@ export class App {
 
     return el("section", {}, [
       el("h2", { class: "section-title" }, ["Samples"]),
+      this.buildRecorder(),
       el("div", { class: "row" }, [chopBtn, padBtn, chopInput, padInput]),
       el("p", { class: "hint" }, [
-        "Chop uses transient detection to auto-slice a loop across all pads.",
+        "Record from your mic, or load a file. Chop uses transient detection to " +
+          "auto-slice across all pads.",
       ]),
+    ]);
+  }
+
+  // ---- Mic recording UI ---------------------------------------------------
+
+  private buildRecorder(): HTMLElement {
+    if (!isRecordingSupported()) {
+      return el("p", { class: "hint" }, [
+        "Mic recording needs a browser with MediaRecorder over HTTPS.",
+      ]);
+    }
+
+    const recBtn = el("button", { class: "ctrl" }, ["● Record"]) as HTMLButtonElement;
+    const status = el("span", { class: "hint" }, ["ready"]);
+
+    // Actions available once a take exists.
+    const chopRecBtn = el("button", { class: "ctrl" }, [
+      "Chop recording → pads",
+    ]) as HTMLButtonElement;
+    const padRecBtn = el("button", { class: "ctrl" }, [
+      "Recording → selected pad",
+    ]) as HTMLButtonElement;
+    chopRecBtn.disabled = true;
+    padRecBtn.disabled = true;
+
+    let timer: number | null = null;
+    let startedAt = 0;
+    const tick = () => {
+      const secs = (performance.now() - startedAt) / 1000;
+      status.textContent = `recording… ${secs.toFixed(1)}s`;
+    };
+
+    recBtn.addEventListener("click", async () => {
+      if (this.engine.isRecording) {
+        // Stop + decode.
+        recBtn.disabled = true;
+        status.textContent = "processing…";
+        if (timer !== null) window.clearInterval(timer);
+        try {
+          const buf = await this.engine.stopRecording();
+          status.textContent = `recorded ${buf.duration.toFixed(1)}s`;
+          chopRecBtn.disabled = false;
+          padRecBtn.disabled = false;
+        } catch (err) {
+          console.error(err);
+          status.textContent = "recording failed";
+        }
+        recBtn.disabled = false;
+        recBtn.textContent = "● Record";
+        recBtn.classList.remove("active");
+      } else {
+        // Start.
+        try {
+          await this.engine.startRecording();
+        } catch (err) {
+          console.error(err);
+          status.textContent = "mic permission denied";
+          return;
+        }
+        recBtn.textContent = "■ Stop";
+        recBtn.classList.add("active");
+        startedAt = performance.now();
+        timer = window.setInterval(tick, 100);
+      }
+    });
+
+    chopRecBtn.addEventListener("click", () => {
+      if (!this.engine.lastRecording) return;
+      const n = this.engine.sliceBufferAcrossPads(this.engine.lastRecording);
+      this.refreshPadLabels();
+      this.refreshTrackPanel();
+      status.textContent = `chopped into ${n} slices`;
+    });
+
+    padRecBtn.addEventListener("click", () => {
+      if (!this.engine.lastRecording) return;
+      this.engine.loadBufferOntoPad(this.selectedTrack, this.engine.lastRecording, "recording");
+      this.refreshPadLabels();
+      this.refreshTrackPanel();
+      status.textContent = `loaded onto ${this.engine.tracks[this.selectedTrack]?.settings.name}`;
+    });
+
+    return el("div", { class: "panel" }, [
+      el("div", { class: "row" }, [recBtn, status]),
+      el("div", { class: "row" }, [chopRecBtn, padRecBtn]),
     ]);
   }
 
