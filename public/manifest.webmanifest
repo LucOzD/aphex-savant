@@ -1,0 +1,19 @@
+{
+  "name": "Pocket Sampler",
+  "short_name": "Sampler",
+  "description": "A pocket sampler, drum machine and step sequencer.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e0e12",
+  "theme_color": "#0e0e12",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

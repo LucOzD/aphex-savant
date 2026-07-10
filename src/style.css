@@ -1,0 +1,230 @@
+:root {
+  --bg: #0e0e12;
+  --panel: #17171f;
+  --panel-2: #1f1f2b;
+  --line: #2a2a38;
+  --text: #e7e7ef;
+  --muted: #8a8a9a;
+  --accent: #ff5c39;
+  --accent-2: #39c0ff;
+  --on: #ffc234;
+  --play: #4fe08a;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Tap-to-start overlay */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: radial-gradient(circle at 50% 40%, #1a1a26, #0b0b0f);
+  z-index: 50;
+}
+.overlay h1 {
+  font-size: 28px;
+  letter-spacing: 2px;
+  margin: 0;
+}
+.overlay p {
+  color: var(--muted);
+  margin: 0;
+}
+.overlay button {
+  margin-top: 16px;
+  padding: 16px 28px;
+  font-size: 18px;
+  border-radius: 999px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.topbar .title {
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin-right: auto;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+button.ctrl {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 700;
+  font-size: 14px;
+}
+button.ctrl.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.play {
+  min-width: 64px;
+}
+button.play.on {
+  background: var(--play);
+  border-color: var(--play);
+  color: #062;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--muted);
+  gap: 2px;
+}
+.field input[type="range"] {
+  width: 120px;
+}
+.field .val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section-title {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+/* Pad grid */
+.pads {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.pad {
+  aspect-ratio: 1 / 1;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 2px solid var(--line);
+  color: var(--text);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+  line-height: 1.1;
+  transition: transform 0.04s, background 0.08s;
+}
+.pad.selected {
+  border-color: var(--accent-2);
+}
+.pad.flash {
+  background: var(--accent);
+  transform: scale(0.96);
+}
+
+/* Step sequencer */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+}
+.step {
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  position: relative;
+}
+.step.beat {
+  border-color: #3a3a4c;
+}
+.step.on {
+  background: var(--on);
+  border-color: var(--on);
+}
+.step.playing {
+  outline: 2px solid var(--play);
+  outline-offset: 1px;
+}
+.step.selected {
+  box-shadow: 0 0 0 2px var(--accent-2) inset;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+.row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Momentary performance button */
+button.perf {
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 800;
+  flex: 1;
+}
+button.perf.held {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #012;
+}
