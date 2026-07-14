@@ -36,8 +36,12 @@ us start audio (especially on iOS).
   notes in the roll (pick a note length, tap to place, tap to remove). Note
   length gates how long the sample sounds. Each melodic instrument is its own
   track, so its filter/delay/reverb + master FX all apply.
-- The sequencer clock is **tick-based**, so the drum bank (1 bar) and melodic
-  bank (2 bars) loop at their own lengths but stay in sync.
+- **Polyrhythms / polymeter**: every drum track has its own **loop length**
+  (1–32 steps), set in the sequence panel. Give the kick 16 steps and the hat 12
+  and they drift against each other. Add more **drum machines** with the
+  "+ Drum machine" button in the Banks row — each is an independent sequencer.
+- The sequencer clock is **tick-based** and monotonic, so tracks/banks of
+  different lengths loop independently while staying locked to the same tempo.
 - **Universal settings**: the sound panel's **ALL PADS** toggle applies a knob
   change to every pad in the bank instead of just the selected one.
 - **Per-pad sound**: volume, pan, filter (cutoff/resonance), pitch, delay send,

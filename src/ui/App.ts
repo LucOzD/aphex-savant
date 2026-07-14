@@ -43,8 +43,11 @@ export class App {
 
   // Cached elements we need to update as playback / selection changes.
   private bankBtns: HTMLButtonElement[] = [];
+  private bankRow!: HTMLElement;
   private padGrid!: HTMLElement;
   private padEls: HTMLButtonElement[] = [];
+  private seqControls!: HTMLElement;
+  private stepGrid!: HTMLElement;
   private stepEls: HTMLButtonElement[] = [];
   private lastPlayhead = -1;
   private trackPanel!: HTMLElement;
@@ -146,22 +149,38 @@ export class App {
   // ---- Bank switcher ------------------------------------------------------
 
   private buildBankSwitcher(): HTMLElement {
+    this.bankRow = el("div", { class: "row" });
+    const section = el("section", {}, [
+      el("h2", { class: "section-title" }, ["Banks — separate sequencers"]),
+      this.bankRow,
+    ]);
+    this.renderBankSwitcher();
+    return section;
+  }
+
+  private renderBankSwitcher() {
+    this.bankRow.innerHTML = "";
     this.bankBtns = [];
-    const row = el("div", { class: "row" });
     this.engine.banks.forEach((b, i) => {
       const btn = el("button", { class: "ctrl" }, [b.name]) as HTMLButtonElement;
       btn.addEventListener("click", () => this.selectBank(i));
       this.bankBtns.push(btn);
-      row.append(btn);
+      this.bankRow.append(btn);
     });
-    return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Bank"]),
-      row,
-    ]);
+    // Spin up another drum machine.
+    const addBtn = el("button", { class: "ctrl" }, ["+ Drum machine"]) as HTMLButtonElement;
+    addBtn.addEventListener("click", () => {
+      const idx = this.engine.addDrumBank();
+      if (idx < 0) return;
+      this.renderBankSwitcher();
+      this.selectBank(idx, true);
+    });
+    this.bankRow.append(addBtn);
+    this.refreshBankButtons();
   }
 
-  private selectBank(i: number) {
-    if (i === this.selectedBank) return;
+  private selectBank(i: number, force = false) {
+    if (i === this.selectedBank && !force) return;
     this.selectedBank = i;
     this.selectedPad = 0;
     this.renderPads();
@@ -220,9 +239,51 @@ export class App {
       this.refreshSteps();
     });
 
-    const grid = el("div", { class: "steps" });
+    this.seqControls = el("div", { class: "row" });
+    this.stepGrid = el("div", { class: "steps" });
     this.stepEls = [];
-    for (let i = 0; i < this.engine.steps; i++) {
+
+    return el("section", {}, [
+      el("div", { class: "row", style: "justify-content:space-between" }, [
+        el("h2", { class: "section-title" }, ["Sequence (drums)"]),
+        plockBtn,
+      ]),
+      this.seqControls,
+      this.stepGrid,
+    ]);
+  }
+
+  /** Per-track loop length control — the key to polyrhythms. */
+  private renderStepControls() {
+    this.seqControls.innerHTML = "";
+    const track = this.track();
+    if (!track) return;
+    this.seqControls.append(
+      slider({
+        label: "STEPS (loop length)",
+        min: 1,
+        max: 32,
+        step: 1,
+        value: track.length,
+        format: (v) => `${v}`,
+        onInput: (v) => {
+          track.setLength(v);
+          if (this.selectedStep >= track.length) this.selectedStep = 0;
+          this.renderStepGrid();
+        },
+      }),
+      el("span", { class: "hint" }, ["give pads different lengths for polymeter"]),
+    );
+  }
+
+  /** (Re)build the step cells for the selected track's current length. */
+  private renderStepGrid() {
+    this.stepGrid.innerHTML = "";
+    this.stepEls = [];
+    const track = this.track();
+    if (!track) return;
+    if (this.selectedStep >= track.length) this.selectedStep = 0;
+    for (let i = 0; i < track.length; i++) {
       const step = el("button", {
         class: i % 4 === 0 ? "step beat" : "step",
       }) as HTMLButtonElement;
@@ -231,16 +292,9 @@ export class App {
         this.onStepTap(i);
       });
       this.stepEls.push(step);
-      grid.append(step);
+      this.stepGrid.append(step);
     }
-
-    return el("section", {}, [
-      el("div", { class: "row", style: "justify-content:space-between" }, [
-        el("h2", { class: "section-title" }, ["Sequence (drums)"]),
-        plockBtn,
-      ]),
-      grid,
-    ]);
+    this.refreshSteps();
   }
 
   private onStepTap(i: number) {
@@ -891,7 +945,8 @@ export class App {
       if (track) this.pianoRoll.setTrack(track);
       if (this.keysPanel) this.renderKeysPanel();
     } else {
-      this.refreshSteps();
+      this.renderStepControls();
+      this.renderStepGrid();
       this.refreshStepPanel();
     }
     this.refreshTrackPanel();
@@ -929,9 +984,10 @@ export class App {
       return;
     }
 
-    // Drum step grid: wrap by the bar length.
-    const steps = this.engine.steps;
-    const local = absStep < 0 ? -1 : ((absStep % steps) + steps) % steps;
+    // Drum step grid: wrap by the selected track's own loop length.
+    const track = this.track();
+    const len = track ? track.length : this.engine.steps;
+    const local = absStep < 0 ? -1 : ((absStep % len) + len) % len;
     if (this.lastPlayhead >= 0 && this.stepEls[this.lastPlayhead]) {
       this.stepEls[this.lastPlayhead].classList.remove("playing");
     }

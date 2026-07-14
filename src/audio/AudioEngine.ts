@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: EngineConfig = {
   steps: 16,
   melodicSteps: 32, // 2 bars for the melodic piano roll
   banks: [
-    { name: "DRUMS", pads: 16, kind: "synth" },
+    { name: "DRUMS 1", pads: 16, kind: "synth" },
     { name: "SAMPLES", pads: 16, kind: "sample" },
   ],
 };
@@ -83,26 +83,39 @@ export class AudioEngine {
     this.updateDelayTime();
 
     for (const bankCfg of this.config.banks) {
-      const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [] };
-      const kit = bankCfg.kind === "synth" ? generateDrumKit(this.ctx, bankCfg.pads) : null;
-      for (let i = 0; i < bankCfg.pads; i++) {
-        const track = new Track(this.ctx, this.master, this.config.steps, {
-          name: kit ? drumName(i) : "empty",
-          // Synth hats choke each other by default; sample pads don't choke.
-          chokeGroup: kit && i % 8 === 2 ? 1 : 0,
-        });
-        if (kit) track.setBuffer(kit[i]);
-        // Sample bank = melodic piano-roll instruments over a longer timeline.
-        if (bankCfg.kind === "sample") {
-          track.melodic = true;
-          track.length = this.config.melodicSteps ?? this.config.steps * 2;
-        }
-        bank.tracks.push(track);
-      }
-      this.banks.push(bank);
+      this.banks.push(this.buildBank(bankCfg));
     }
 
     this.started = true;
+  }
+
+  /** Construct a bank of pads/tracks from a config (used at init + when adding). */
+  private buildBank(bankCfg: BankConfig): Bank {
+    const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [] };
+    const kit = bankCfg.kind === "synth" ? generateDrumKit(this.ctx, bankCfg.pads) : null;
+    for (let i = 0; i < bankCfg.pads; i++) {
+      const track = new Track(this.ctx, this.master, this.config.steps, {
+        name: kit ? drumName(i) : "empty",
+        // Synth hats choke each other by default; sample pads don't choke.
+        chokeGroup: kit && i % 8 === 2 ? 1 : 0,
+      });
+      if (kit) track.setBuffer(kit[i]);
+      // Sample bank = melodic piano-roll instruments over a longer timeline.
+      if (bankCfg.kind === "sample") {
+        track.melodic = true;
+        track.setLength(this.config.melodicSteps ?? this.config.steps * 2);
+      }
+      bank.tracks.push(track);
+    }
+    return bank;
+  }
+
+  /** Add a fresh drum machine (synth bank). Returns its bank index. */
+  addDrumBank(pads = 16): number {
+    if (!this.started) return -1;
+    const count = this.banks.filter((b) => b.kind === "synth").length + 1;
+    this.banks.push(this.buildBank({ name: `DRUMS ${count}`, pads, kind: "synth" }));
+    return this.banks.length - 1;
   }
 
   get isReady(): boolean {

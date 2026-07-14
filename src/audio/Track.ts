@@ -90,6 +90,16 @@ export class Track {
   }
 
   /**
+   * Set the loop length in steps. Grows the step array as needed (never shrinks
+   * the stored data, so shortening then re-lengthening keeps your hits). Enables
+   * per-track polymeter / polyrhythms.
+   */
+  setLength(steps: number) {
+    this.length = Math.max(1, Math.round(steps));
+    while (this.steps.length < this.length) this.steps.push(defaultStep());
+  }
+
+  /**
    * Trigger the sound.
    * @param when   AudioContext time to start.
    * @param semis  Extra pitch offset in semitones (from a step or note).
