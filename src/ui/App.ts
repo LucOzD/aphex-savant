@@ -267,12 +267,13 @@ export class App {
         value: track.length,
         format: (v) => `${v}`,
         onInput: (v) => {
-          track.setLength(v);
-          if (this.selectedStep >= track.length) this.selectedStep = 0;
+          // Loop length is shared by every pad in this drum machine.
+          this.bank().tracks.forEach((t) => t.setLength(v));
+          if (this.selectedStep >= v) this.selectedStep = 0;
           this.renderStepGrid();
         },
       }),
-      el("span", { class: "hint" }, ["give pads different lengths for polymeter"]),
+      el("span", { class: "hint" }, ["applies to the whole machine — add more machines for polyrhythms"]),
     );
   }
 

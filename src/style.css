@@ -165,6 +165,17 @@ main {
   border-style: dashed;
   background: #14141c;
 }
+
+/* On larger (desktop) screens, keep pads compact instead of stretching wide. */
+@media (min-width: 768px) {
+  .pads {
+    grid-template-columns: repeat(4, 84px);
+    justify-content: start;
+  }
+  .pad {
+    font-size: 10px;
+  }
+}
 .pad.selected {
   border-color: var(--accent-2);
 }
