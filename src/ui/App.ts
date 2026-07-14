@@ -4,11 +4,16 @@ import type { Step } from "../audio/types.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
 import { isBlackKey, midiToName } from "../audio/music.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
+import { PianoRoll } from "./PianoRoll.ts";
 import { el, slider } from "./dom.ts";
 
 /** Fixed range of the on-screen keyboard (C3–C5). */
 const KEY_LOW = 48;
 const KEY_HIGH = 72;
+
+/** Pitch range of the piano roll (C3–C6). */
+const ROLL_LOW = 48;
+const ROLL_HIGH = 84;
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
 export class App {
@@ -20,11 +25,17 @@ export class App {
   private selectedStep = 0;
   private plockMode = false;
 
-  // Melodic keyboard / note entry.
-  private noteEntryMode = false;
+  // Melodic keyboard + piano roll.
   private activeNote = 60;
   private keysPanel!: HTMLElement;
   private keyEls: { note: number; el: HTMLButtonElement }[] = [];
+  private pianoRoll = new PianoRoll(ROLL_LOW, ROLL_HIGH);
+
+  // Section elements toggled between drum (step) and melodic (piano-roll) views.
+  private keysSection!: HTMLElement;
+  private rollSection!: HTMLElement;
+  private stepSection!: HTMLElement;
+  private stepPanelSection!: HTMLElement;
 
   // "Universal" apply toggles.
   private applyAllPads = false;
@@ -55,12 +66,17 @@ export class App {
     this.root.innerHTML = "";
     this.root.append(this.buildTopbar());
     const main = el("main");
+    this.keysSection = this.buildKeyboard();
+    this.rollSection = this.buildPianoRoll();
+    this.stepSection = this.buildSequencer();
+    this.stepPanelSection = this.buildStepPanel();
     main.append(
       this.buildBankSwitcher(),
       this.buildPads(),
-      this.buildKeyboard(),
-      this.buildSequencer(),
-      this.buildStepPanel(),
+      this.keysSection,
+      this.rollSection,
+      this.stepSection,
+      this.stepPanelSection,
       this.buildTrackPanel(),
       this.buildMasterPanel(),
       this.buildPerformance(),
@@ -197,22 +213,10 @@ export class App {
   // ---- Step sequencer -----------------------------------------------------
 
   private buildSequencer(): HTMLElement {
-    const keysBtn = el("button", { class: "ctrl" }, ["KEYS"]) as HTMLButtonElement;
     const plockBtn = el("button", { class: "ctrl" }, ["P-LOCK"]) as HTMLButtonElement;
-
-    // KEYS (note entry) and P-LOCK are mutually exclusive edit modes.
-    keysBtn.addEventListener("click", () => {
-      this.noteEntryMode = !this.noteEntryMode;
-      if (this.noteEntryMode) this.plockMode = false;
-      keysBtn.classList.toggle("active", this.noteEntryMode);
-      plockBtn.classList.toggle("active", this.plockMode);
-      this.refreshSteps();
-    });
     plockBtn.addEventListener("click", () => {
       this.plockMode = !this.plockMode;
-      if (this.plockMode) this.noteEntryMode = false;
       plockBtn.classList.toggle("active", this.plockMode);
-      keysBtn.classList.toggle("active", this.noteEntryMode);
       this.refreshSteps();
     });
 
@@ -232,8 +236,8 @@ export class App {
 
     return el("section", {}, [
       el("div", { class: "row", style: "justify-content:space-between" }, [
-        el("h2", { class: "section-title" }, ["Sequence"]),
-        el("div", { class: "row" }, [keysBtn, plockBtn]),
+        el("h2", { class: "section-title" }, ["Sequence (drums)"]),
+        plockBtn,
       ]),
       grid,
     ]);
@@ -242,23 +246,29 @@ export class App {
   private onStepTap(i: number) {
     const track = this.track();
     if (!track) return;
-    if (this.noteEntryMode) {
-      // Write the currently-selected keyboard note into the step.
-      const step = track.steps[i];
-      const targetPitch = this.activeNote - track.settings.rootNote;
-      if (step.on && step.pitch === targetPitch) {
-        step.on = false; // tapping the same note again clears the step
-      } else {
-        step.on = true;
-        step.pitch = targetPitch;
-      }
-    } else if (this.plockMode) {
+    if (this.plockMode) {
       this.selectedStep = i;
       this.refreshStepPanel();
     } else {
       track.steps[i].on = !track.steps[i].on;
     }
     this.refreshSteps();
+  }
+
+  // ---- Piano roll (melodic) ----------------------------------------------
+
+  private buildPianoRoll(): HTMLElement {
+    this.pianoRoll.onAudition = (pitch) => {
+      this.activeNote = pitch;
+      this.engine.playNote(this.selectedBank, this.selectedPad, pitch, 1);
+      this.refreshKeyHighlights();
+    };
+    return el("section", {}, [
+      el("h2", { class: "section-title" }, [
+        "Piano roll — tap to place notes, tap a note to remove",
+      ]),
+      this.pianoRoll.root,
+    ]);
   }
 
   // ---- Melodic keyboard ---------------------------------------------------
@@ -866,10 +876,25 @@ export class App {
   private refreshSelection() {
     this.refreshBankButtons();
     this.padEls.forEach((p, i) => p.classList.toggle("selected", i === this.selectedPad));
-    this.refreshSteps();
-    this.refreshStepPanel();
+
+    // Drum bank shows the step grid; sample bank shows the melodic piano roll.
+    const melodic = this.bank()?.kind === "sample";
+    if (this.keysSection) {
+      this.keysSection.style.display = melodic ? "" : "none";
+      this.rollSection.style.display = melodic ? "" : "none";
+      this.stepSection.style.display = melodic ? "none" : "";
+      this.stepPanelSection.style.display = melodic ? "none" : "";
+    }
+
+    if (melodic) {
+      const track = this.track();
+      if (track) this.pianoRoll.setTrack(track);
+      if (this.keysPanel) this.renderKeysPanel();
+    } else {
+      this.refreshSteps();
+      this.refreshStepPanel();
+    }
     this.refreshTrackPanel();
-    if (this.keysPanel) this.renderKeysPanel();
   }
 
   private refreshSteps() {
@@ -880,19 +905,39 @@ export class App {
       const step = track.steps[i];
       cell.classList.toggle("on", step.on);
       cell.classList.toggle("selected", this.plockMode && i === this.selectedStep);
-      // Show the note name on melodic steps (note entry, or any repitched step).
-      const showNote = step.on && (this.noteEntryMode || step.pitch !== 0);
+      // Show the note name on any repitched step.
+      const showNote = step.on && step.pitch !== 0;
       cell.textContent = showNote ? midiToName(root + step.pitch) : "";
     });
   }
 
-  private highlightPlayhead(step: number) {
+  private highlightPlayhead(absStep: number) {
+    const melodic = this.bank()?.kind === "sample";
+    if (melodic) {
+      // Clear the step grid highlight if it was showing, then drive the roll.
+      if (this.lastPlayhead >= 0 && this.stepEls[this.lastPlayhead]) {
+        this.stepEls[this.lastPlayhead].classList.remove("playing");
+      }
+      this.lastPlayhead = -1;
+      const track = this.track();
+      if (absStep < 0 || !track) {
+        this.pianoRoll.setPlayhead(-1);
+        return;
+      }
+      const len = track.length;
+      this.pianoRoll.setPlayhead(((absStep % len) + len) % len);
+      return;
+    }
+
+    // Drum step grid: wrap by the bar length.
+    const steps = this.engine.steps;
+    const local = absStep < 0 ? -1 : ((absStep % steps) + steps) % steps;
     if (this.lastPlayhead >= 0 && this.stepEls[this.lastPlayhead]) {
       this.stepEls[this.lastPlayhead].classList.remove("playing");
     }
-    if (step >= 0 && this.stepEls[step]) {
-      this.stepEls[step].classList.add("playing");
+    if (local >= 0 && this.stepEls[local]) {
+      this.stepEls[local].classList.add("playing");
     }
-    this.lastPlayhead = step;
+    this.lastPlayhead = local;
   }
 }

@@ -64,3 +64,18 @@ export function defaultTrackSettings(name: string): TrackSettings {
 export function defaultStep(): Step {
   return { on: false, pitch: 0, probability: 1, velocity: 1 };
 }
+
+/**
+ * A note in a melodic (piano-roll) track. Unlike a Step, a note has an absolute
+ * pitch, a start position, and a length measured in steps — DAW-style.
+ */
+export interface Note {
+  /** Absolute MIDI note number. */
+  pitch: number;
+  /** Start position in steps from the top of the loop. */
+  start: number;
+  /** Length in steps (>= 1). Gates how long the sample sounds. */
+  length: number;
+  /** 0..1 velocity/level. */
+  velocity: number;
+}

@@ -29,11 +29,15 @@ us start audio (especially on iOS).
   plus **swing** and **tempo**.
 - **Per-step locks** (P-LOCK mode): pitch, probability (chance), and velocity.
   Toggle **ALL STEPS** to apply a step edit across every step at once.
-- **Melodic keyboard**: set a sample's **base pitch (root note)**, then play it
-  chromatically across the keyboard. In **KEYS** mode, tapping a step writes the
-  selected note into the sequence, so you can compose melodies from a sample.
-  Each melodic instrument is its own track, so its filter/delay/reverb + master
-  FX all apply.
+- **Melodic / DAW mode (SAMPLES bank)**: sample pads are melodic instruments
+  edited in a **piano roll** — notes have pitch, position, and length across a
+  longer (2-bar) timeline, DAW-style, rather than a drum grid. Set the sample's
+  **base pitch (root note)** on the keyboard, audition by tapping keys, then draw
+  notes in the roll (pick a note length, tap to place, tap to remove). Note
+  length gates how long the sample sounds. Each melodic instrument is its own
+  track, so its filter/delay/reverb + master FX all apply.
+- The sequencer clock is **tick-based**, so the drum bank (1 bar) and melodic
+  bank (2 bars) loop at their own lengths but stay in sync.
 - **Universal settings**: the sound panel's **ALL PADS** toggle applies a knob
   change to every pad in the bank instead of just the selected one.
 - **Per-pad sound**: volume, pan, filter (cutoff/resonance), pitch, delay send,

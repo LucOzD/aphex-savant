@@ -14,9 +14,13 @@ export class Scheduler {
   private nextNoteTime = 0;
   private step = 0;
 
-  /** Called for each step: (stepIndex, audioTime). */
+  /**
+   * Called for each step: (absoluteStep, audioTime). The step counter is
+   * monotonic (never wraps); each track applies its own loop length via modulo,
+   * which allows tracks of different lengths to play together.
+   */
   onStep: (step: number, time: number) => void = () => {};
-  /** Total steps in a bar. */
+  /** Reference bar length in steps (used by consumers, not for wrapping). */
   totalSteps = 16;
   /** Beats per minute. */
   bpm = 120;
@@ -45,8 +49,8 @@ export class Scheduler {
     }
   }
 
-  private secondsPerStep(): number {
-    // 16 steps per bar => a step is a 16th note (quarter / 4).
+  /** Duration of one step (a 16th note) in seconds. */
+  get stepDuration(): number {
     return 60 / this.bpm / 4;
   }
 
@@ -55,11 +59,11 @@ export class Scheduler {
       let time = this.nextNoteTime;
       // Apply swing to odd (off-beat) 16ths.
       if (this.step % 2 === 1) {
-        time += this.secondsPerStep() * this.swing * 0.5;
+        time += this.stepDuration * this.swing * 0.5;
       }
       this.onStep(this.step, time);
-      this.nextNoteTime += this.secondsPerStep();
-      this.step = (this.step + 1) % this.totalSteps;
+      this.nextNoteTime += this.stepDuration;
+      this.step += 1; // monotonic; tracks wrap via their own length
     }
   }
 }

@@ -1,6 +1,6 @@
 import type { MasterChain } from "./MasterChain.ts";
 import { semitonesToRate } from "./dsp.ts";
-import { defaultTrackSettings, type Step, type TrackSettings } from "./types.ts";
+import { defaultTrackSettings, type Note, type Step, type TrackSettings } from "./types.ts";
 import { defaultStep } from "./types.ts";
 
 /**
@@ -13,7 +13,21 @@ import { defaultStep } from "./types.ts";
  */
 export class Track {
   readonly settings: TrackSettings;
+
+  /** Drum-machine sequence (used when !melodic). */
   steps: Step[];
+
+  /** Piano-roll notes (used when melodic). */
+  notes: Note[] = [];
+
+  /**
+   * When true, this track is a melodic/piano-roll instrument: it plays `notes`
+   * (pitch + start + length) instead of the on/off `steps` grid.
+   */
+  melodic = false;
+
+  /** Loop length in steps. Drums default to the bar length; melodic can be longer. */
+  length: number;
 
   private readonly ctx: AudioContext;
 
@@ -39,6 +53,7 @@ export class Track {
     this.ctx = ctx;
     this.settings = { ...defaultTrackSettings("pad"), ...settings };
     this.steps = Array.from({ length: steps }, () => defaultStep());
+    this.length = steps;
 
     this.filter = ctx.createBiquadFilter();
     this.panner = ctx.createStereoPanner();
@@ -77,10 +92,13 @@ export class Track {
   /**
    * Trigger the sound.
    * @param when   AudioContext time to start.
-   * @param semis  Extra pitch offset in semitones (from a step).
+   * @param semis  Extra pitch offset in semitones (from a step or note).
    * @param velocity 0..1 level.
+   * @param gateSeconds  Optional note length in real seconds. If given, the
+   *   sample is cut off (and released) after this long — this is what makes the
+   *   piano roll's note lengths behave like a DAW.
    */
-  trigger(when: number, semis = 0, velocity = 1) {
+  trigger(when: number, semis = 0, velocity = 1, gateSeconds?: number) {
     if (!this.buffer) return;
     const s = this.settings;
 
@@ -88,7 +106,8 @@ export class Track {
 
     const src = this.ctx.createBufferSource();
     src.buffer = this.buffer;
-    src.playbackRate.value = s.playbackRate * semitonesToRate(semis);
+    const rate = s.playbackRate * semitonesToRate(semis);
+    src.playbackRate.value = rate;
 
     const hitGain = this.ctx.createGain();
     // Amplitude envelope: quick attack to `velocity`, then release.
@@ -100,16 +119,21 @@ export class Track {
     hitGain.connect(this.filter);
 
     let offset = 0;
-    let duration: number | undefined;
+    let regionDur: number | undefined; // source-domain seconds
     if (this.region) {
       offset = this.region[0];
-      duration = Math.max(0.01, this.region[1] - this.region[0]);
+      regionDur = Math.max(0.01, this.region[1] - this.region[0]);
     }
-    const soundLen = duration ?? this.buffer.duration;
-    const stopAt = when + soundLen / src.playbackRate.value + s.release;
-    hitGain.gain.setTargetAtTime(0.0001, when + soundLen / src.playbackRate.value, s.release / 3 + 0.01);
 
-    if (duration !== undefined) src.start(when, offset, duration + s.release);
+    // Real playback time to sound the whole sample/region at this rate.
+    const naturalReal = (regionDur ?? this.buffer.duration) / rate;
+    // Gate to the note length if one was supplied.
+    const soundReal = gateSeconds != null ? Math.min(naturalReal, gateSeconds) : naturalReal;
+
+    hitGain.gain.setTargetAtTime(0.0001, when + soundReal, s.release / 3 + 0.01);
+    const stopAt = when + soundReal + s.release;
+
+    if (regionDur !== undefined) src.start(when, offset, regionDur);
     else src.start(when, offset);
     src.stop(stopAt);
 
