@@ -28,6 +28,14 @@ us start audio (especially on iOS).
 - **16-step sequencer** per pad with a lookahead scheduler for tight timing,
   plus **swing** and **tempo**.
 - **Per-step locks** (P-LOCK mode): pitch, probability (chance), and velocity.
+  Toggle **ALL STEPS** to apply a step edit across every step at once.
+- **Melodic keyboard**: set a sample's **base pitch (root note)**, then play it
+  chromatically across the keyboard. In **KEYS** mode, tapping a step writes the
+  selected note into the sequence, so you can compose melodies from a sample.
+  Each melodic instrument is its own track, so its filter/delay/reverb + master
+  FX all apply.
+- **Universal settings**: the sound panel's **ALL PADS** toggle applies a knob
+  change to every pad in the bank instead of just the selected one.
 - **Per-pad sound**: volume, pan, filter (cutoff/resonance), pitch, delay send,
   reverb send. Hats choke each other by default.
 - **Master FX**: bitcrusher + sample-rate reducer (AudioWorklet), master filter,

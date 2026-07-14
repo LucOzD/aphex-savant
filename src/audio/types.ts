@@ -31,6 +31,11 @@ export interface TrackSettings {
   reverbSend: number;
   /** Base playback rate multiplier (before per-step pitch). */
   playbackRate: number;
+  /**
+   * MIDI note that plays the sample at its recorded pitch. Notes above/below
+   * this repitch the sample chromatically. Used by the melodic keyboard.
+   */
+  rootNote: number;
   /** Amplitude envelope (seconds). */
   attack: number;
   release: number;
@@ -49,6 +54,7 @@ export function defaultTrackSettings(name: string): TrackSettings {
     delaySend: 0,
     reverbSend: 0,
     playbackRate: 1,
+    rootNote: 60, // C4
     attack: 0.001,
     release: 0.25,
     chokeGroup: 0,

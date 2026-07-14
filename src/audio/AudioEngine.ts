@@ -163,6 +163,14 @@ export class AudioEngine {
     track.trigger(this.ctx.currentTime + 0.005, 0, velocity);
   }
 
+  /** Live-play a pad chromatically at a MIDI note, relative to its root. */
+  playNote(bankIndex: number, padIndex: number, midiNote: number, velocity = 1) {
+    const track = this.banks[bankIndex]?.tracks[padIndex];
+    if (!track) return;
+    const semis = midiNote - track.settings.rootNote;
+    track.trigger(this.ctx.currentTime + 0.005, semis, velocity);
+  }
+
   private handleStep(step: number, time: number) {
     for (const track of this.allTracks) {
       const s = track.steps[step];

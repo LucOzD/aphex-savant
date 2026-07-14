@@ -1,8 +1,14 @@
 import type { AudioEngine } from "../audio/AudioEngine.ts";
 import type { Track } from "../audio/Track.ts";
+import type { Step } from "../audio/types.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
+import { isBlackKey, midiToName } from "../audio/music.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
 import { el, slider } from "./dom.ts";
+
+/** Fixed range of the on-screen keyboard (C3–C5). */
+const KEY_LOW = 48;
+const KEY_HIGH = 72;
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
 export class App {
@@ -13,6 +19,16 @@ export class App {
   private selectedPad = 0;
   private selectedStep = 0;
   private plockMode = false;
+
+  // Melodic keyboard / note entry.
+  private noteEntryMode = false;
+  private activeNote = 60;
+  private keysPanel!: HTMLElement;
+  private keyEls: { note: number; el: HTMLButtonElement }[] = [];
+
+  // "Universal" apply toggles.
+  private applyAllPads = false;
+  private applyAllSteps = false;
 
   // Cached elements we need to update as playback / selection changes.
   private bankBtns: HTMLButtonElement[] = [];
@@ -42,6 +58,7 @@ export class App {
     main.append(
       this.buildBankSwitcher(),
       this.buildPads(),
+      this.buildKeyboard(),
       this.buildSequencer(),
       this.buildStepPanel(),
       this.buildTrackPanel(),
@@ -180,10 +197,22 @@ export class App {
   // ---- Step sequencer -----------------------------------------------------
 
   private buildSequencer(): HTMLElement {
+    const keysBtn = el("button", { class: "ctrl" }, ["KEYS"]) as HTMLButtonElement;
     const plockBtn = el("button", { class: "ctrl" }, ["P-LOCK"]) as HTMLButtonElement;
+
+    // KEYS (note entry) and P-LOCK are mutually exclusive edit modes.
+    keysBtn.addEventListener("click", () => {
+      this.noteEntryMode = !this.noteEntryMode;
+      if (this.noteEntryMode) this.plockMode = false;
+      keysBtn.classList.toggle("active", this.noteEntryMode);
+      plockBtn.classList.toggle("active", this.plockMode);
+      this.refreshSteps();
+    });
     plockBtn.addEventListener("click", () => {
       this.plockMode = !this.plockMode;
+      if (this.plockMode) this.noteEntryMode = false;
       plockBtn.classList.toggle("active", this.plockMode);
+      keysBtn.classList.toggle("active", this.noteEntryMode);
       this.refreshSteps();
     });
 
@@ -204,7 +233,7 @@ export class App {
     return el("section", {}, [
       el("div", { class: "row", style: "justify-content:space-between" }, [
         el("h2", { class: "section-title" }, ["Sequence"]),
-        plockBtn,
+        el("div", { class: "row" }, [keysBtn, plockBtn]),
       ]),
       grid,
     ]);
@@ -213,13 +242,88 @@ export class App {
   private onStepTap(i: number) {
     const track = this.track();
     if (!track) return;
-    if (this.plockMode) {
+    if (this.noteEntryMode) {
+      // Write the currently-selected keyboard note into the step.
+      const step = track.steps[i];
+      const targetPitch = this.activeNote - track.settings.rootNote;
+      if (step.on && step.pitch === targetPitch) {
+        step.on = false; // tapping the same note again clears the step
+      } else {
+        step.on = true;
+        step.pitch = targetPitch;
+      }
+    } else if (this.plockMode) {
       this.selectedStep = i;
       this.refreshStepPanel();
     } else {
       track.steps[i].on = !track.steps[i].on;
     }
     this.refreshSteps();
+  }
+
+  // ---- Melodic keyboard ---------------------------------------------------
+
+  private buildKeyboard(): HTMLElement {
+    this.keysPanel = el("div", { class: "panel" });
+    const section = el("section", {}, [
+      el("h2", { class: "section-title" }, [
+        "Keyboard — set a base pitch, then play/sequence the sample chromatically",
+      ]),
+      this.keysPanel,
+    ]);
+    this.renderKeysPanel();
+    return section;
+  }
+
+  private renderKeysPanel() {
+    const track = this.track();
+    this.keysPanel.innerHTML = "";
+    this.keyEls = [];
+    if (!track) return;
+
+    // Base-pitch (root) control. The root note plays the sample untransposed.
+    const rootRow = el("div", { class: "row" }, [
+      slider({
+        label: "BASE PITCH (ROOT)",
+        min: KEY_LOW,
+        max: KEY_HIGH,
+        step: 1,
+        value: track.settings.rootNote,
+        format: (v) => midiToName(v),
+        onInput: (v) => {
+          this.applyTrackSetting((t) => (t.settings.rootNote = v));
+          this.refreshKeyHighlights();
+        },
+      }),
+      el("span", { class: "hint" }, ["Tap keys to audition · KEYS mode writes notes to steps"]),
+    ]);
+
+    const keyboard = el("div", { class: "keys" });
+    for (let n = KEY_LOW; n <= KEY_HIGH; n++) {
+      const key = el("button", {
+        class: `key ${isBlackKey(n) ? "black" : "white"}`,
+      }, [midiToName(n)]) as HTMLButtonElement;
+      key.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        this.activeNote = n;
+        this.engine.playNote(this.selectedBank, this.selectedPad, n, 1);
+        this.refreshKeyHighlights();
+      });
+      this.keyEls.push({ note: n, el: key });
+      keyboard.append(key);
+    }
+
+    this.keysPanel.append(rootRow, keyboard);
+    this.refreshKeyHighlights();
+  }
+
+  private refreshKeyHighlights() {
+    const track = this.track();
+    const root = track?.settings.rootNote ?? 60;
+    this.keyEls.forEach(({ note, el: keyEl }) => {
+      keyEl.classList.toggle("root", note === root);
+      keyEl.classList.toggle("active", note === this.activeNote);
+    });
   }
 
   // ---- Per-step detail panel ---------------------------------------------
@@ -239,9 +343,20 @@ export class App {
     this.stepPanel.innerHTML = "";
     if (!track) return;
     const step = track.steps[this.selectedStep];
+
+    const allBtn = el("button", { class: "ctrl" }, ["ALL STEPS"]) as HTMLButtonElement;
+    allBtn.classList.toggle("active", this.applyAllSteps);
+    allBtn.addEventListener("click", () => {
+      this.applyAllSteps = !this.applyAllSteps;
+      allBtn.classList.toggle("active", this.applyAllSteps);
+    });
+
     this.stepPanel.append(
-      el("div", { class: "hint" }, [
-        `Editing ${track.settings.name} · step ${this.selectedStep + 1}`,
+      el("div", { class: "row", style: "justify-content:space-between" }, [
+        el("span", { class: "hint" }, [
+          `Editing ${track.settings.name} · step ${this.selectedStep + 1}`,
+        ]),
+        allBtn,
       ]),
       el("div", { class: "row" }, [
         slider({
@@ -251,7 +366,7 @@ export class App {
           step: 1,
           value: step.pitch,
           format: (v) => `${v > 0 ? "+" : ""}${v} st`,
-          onInput: (v) => (step.pitch = v),
+          onInput: (v) => this.applyStepSetting((s) => (s.pitch = v)),
         }),
         slider({
           label: "CHANCE",
@@ -260,7 +375,7 @@ export class App {
           step: 0.05,
           value: step.probability,
           format: (v) => `${Math.round(v * 100)}%`,
-          onInput: (v) => (step.probability = v),
+          onInput: (v) => this.applyStepSetting((s) => (s.probability = v)),
         }),
         slider({
           label: "VELOCITY",
@@ -269,10 +384,19 @@ export class App {
           step: 0.05,
           value: step.velocity,
           format: (v) => `${Math.round(v * 100)}%`,
-          onInput: (v) => (step.velocity = v),
+          onInput: (v) => this.applyStepSetting((s) => (s.velocity = v)),
         }),
       ]),
     );
+  }
+
+  /** Apply a step edit to just the selected step, or all steps if ALL STEPS is on. */
+  private applyStepSetting(fn: (s: Step) => void) {
+    const track = this.track();
+    if (!track) return;
+    const targets = this.applyAllSteps ? track.steps : [track.steps[this.selectedStep]];
+    targets.forEach(fn);
+    this.refreshSteps();
   }
 
   // ---- Per-track sound panel ---------------------------------------------
@@ -292,9 +416,19 @@ export class App {
     this.trackPanel.innerHTML = "";
     if (!track) return;
     const s = track.settings;
-    const apply = () => track.applySettings();
+
+    const allBtn = el("button", { class: "ctrl" }, ["ALL PADS"]) as HTMLButtonElement;
+    allBtn.classList.toggle("active", this.applyAllPads);
+    allBtn.addEventListener("click", () => {
+      this.applyAllPads = !this.applyAllPads;
+      allBtn.classList.toggle("active", this.applyAllPads);
+    });
+
     this.trackPanel.append(
-      el("div", { class: "hint" }, [s.name]),
+      el("div", { class: "row", style: "justify-content:space-between" }, [
+        el("span", { class: "hint" }, [`${s.name} — ${this.bank().name} bank`]),
+        allBtn,
+      ]),
       el("div", { class: "row" }, [
         slider({
           label: "VOLUME",
@@ -303,10 +437,7 @@ export class App {
           step: 0.01,
           value: s.gain,
           format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => {
-            s.gain = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.gain = v)),
         }),
         slider({
           label: "PAN",
@@ -315,10 +446,7 @@ export class App {
           step: 0.05,
           value: s.pan,
           format: (v) => v.toFixed(2),
-          onInput: (v) => {
-            s.pan = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.pan = v)),
         }),
         slider({
           label: "CUTOFF",
@@ -327,10 +455,7 @@ export class App {
           step: 10,
           value: s.cutoff,
           format: (v) => `${Math.round(v)}Hz`,
-          onInput: (v) => {
-            s.cutoff = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.cutoff = v)),
         }),
         slider({
           label: "RESO",
@@ -339,10 +464,7 @@ export class App {
           step: 0.1,
           value: s.resonance,
           format: (v) => v.toFixed(1),
-          onInput: (v) => {
-            s.resonance = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.resonance = v)),
         }),
         slider({
           label: "PITCH",
@@ -351,10 +473,7 @@ export class App {
           step: 0.01,
           value: s.playbackRate,
           format: (v) => `${v.toFixed(2)}x`,
-          onInput: (v) => {
-            s.playbackRate = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.playbackRate = v)),
         }),
         slider({
           label: "DELAY",
@@ -363,10 +482,7 @@ export class App {
           step: 0.01,
           value: s.delaySend,
           format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => {
-            s.delaySend = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.delaySend = v)),
         }),
         slider({
           label: "REVERB",
@@ -375,13 +491,21 @@ export class App {
           step: 0.01,
           value: s.reverbSend,
           format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => {
-            s.reverbSend = v;
-            apply();
-          },
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.reverbSend = v)),
         }),
       ]),
     );
+  }
+
+  /** Apply a sound edit to just the selected pad, or all pads in the bank if ALL PADS is on. */
+  private applyTrackSetting(fn: (t: Track) => void) {
+    const current = this.track();
+    if (!current) return;
+    const targets = this.applyAllPads ? this.bank().tracks : [current];
+    targets.forEach((t) => {
+      fn(t);
+      t.applySettings();
+    });
   }
 
   // ---- Master FX ----------------------------------------------------------
@@ -745,14 +869,20 @@ export class App {
     this.refreshSteps();
     this.refreshStepPanel();
     this.refreshTrackPanel();
+    if (this.keysPanel) this.renderKeysPanel();
   }
 
   private refreshSteps() {
     const track = this.track();
     if (!track) return;
+    const root = track.settings.rootNote;
     this.stepEls.forEach((cell, i) => {
-      cell.classList.toggle("on", track.steps[i].on);
+      const step = track.steps[i];
+      cell.classList.toggle("on", step.on);
       cell.classList.toggle("selected", this.plockMode && i === this.selectedStep);
+      // Show the note name on melodic steps (note entry, or any repitched step).
+      const showNote = step.on && (this.noteEntryMode || step.pitch !== 0);
+      cell.textContent = showNote ? midiToName(root + step.pitch) : "";
     });
   }
 
