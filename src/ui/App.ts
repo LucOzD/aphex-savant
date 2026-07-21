@@ -2,18 +2,8 @@ import type { AudioEngine } from "../audio/AudioEngine.ts";
 import type { Track } from "../audio/Track.ts";
 import type { Step } from "../audio/types.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
-import { isBlackKey, midiToName } from "../audio/music.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
-import { PianoRoll } from "./PianoRoll.ts";
 import { el, slider } from "./dom.ts";
-
-/** Fixed range of the on-screen keyboard (C3–C5). */
-const KEY_LOW = 48;
-const KEY_HIGH = 72;
-
-/** Pitch range of the piano roll (C3–C6). */
-const ROLL_LOW = 48;
-const ROLL_HIGH = 84;
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
 export class App {
@@ -25,23 +15,11 @@ export class App {
   private selectedStep = 0;
   private plockMode = false;
 
-  // Melodic keyboard + piano roll.
-  private activeNote = 60;
-  private keysPanel!: HTMLElement;
-  private keyEls: { note: number; el: HTMLButtonElement }[] = [];
-  private pianoRoll = new PianoRoll(ROLL_LOW, ROLL_HIGH);
-
-  // Section elements toggled between drum (step) and melodic (piano-roll) views.
-  private keysSection!: HTMLElement;
-  private rollSection!: HTMLElement;
-  private stepSection!: HTMLElement;
-  private stepPanelSection!: HTMLElement;
-
   // "Universal" apply toggles.
   private applyAllPads = false;
   private applyAllSteps = false;
 
-  // Cached elements we need to update as playback / selection changes.
+  // Cached elements.
   private bankBtns: HTMLButtonElement[] = [];
   private bankRow!: HTMLElement;
   private padGrid!: HTMLElement;
@@ -69,17 +47,11 @@ export class App {
     this.root.innerHTML = "";
     this.root.append(this.buildTopbar());
     const main = el("main");
-    this.keysSection = this.buildKeyboard();
-    this.rollSection = this.buildPianoRoll();
-    this.stepSection = this.buildSequencer();
-    this.stepPanelSection = this.buildStepPanel();
     main.append(
       this.buildBankSwitcher(),
       this.buildPads(),
-      this.keysSection,
-      this.rollSection,
-      this.stepSection,
-      this.stepPanelSection,
+      this.buildSequencer(),
+      this.buildStepPanel(),
       this.buildTrackPanel(),
       this.buildMasterPanel(),
       this.buildPerformance(),
@@ -89,7 +61,6 @@ export class App {
     this.root.append(main);
     this.renderPads();
     this.refreshSelection();
-    // Draw the (empty) waveform once it has a real width.
     requestAnimationFrame(() => this.editor.redraw());
   }
 
@@ -119,30 +90,17 @@ export class App {
     });
 
     const tempo = slider({
-      label: "TEMPO",
-      min: 60,
-      max: 200,
-      step: 1,
-      value: this.engine.bpm,
-      format: (v) => `${v} bpm`,
-      onInput: (v) => (this.engine.bpm = v),
+      label: "TEMPO", min: 60, max: 200, step: 1, value: this.engine.bpm,
+      format: (v) => `${v} bpm`, onInput: (v) => (this.engine.bpm = v),
     });
-
     const swing = slider({
-      label: "SWING",
-      min: 0,
-      max: 1,
-      step: 0.01,
-      value: this.engine.swing,
-      format: (v) => `${Math.round(v * 100)}%`,
-      onInput: (v) => (this.engine.swing = v),
+      label: "SWING", min: 0, max: 1, step: 0.01, value: this.engine.swing,
+      format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => (this.engine.swing = v),
     });
 
     return el("div", { class: "topbar" }, [
       el("span", { class: "title" }, ["POCKET SAMPLER"]),
-      playBtn,
-      tempo,
-      swing,
+      playBtn, tempo, swing,
     ]);
   }
 
@@ -167,7 +125,6 @@ export class App {
       this.bankBtns.push(btn);
       this.bankRow.append(btn);
     });
-    // Spin up another drum machine.
     const addBtn = el("button", { class: "ctrl" }, ["+ Drum machine"]) as HTMLButtonElement;
     addBtn.addEventListener("click", () => {
       const idx = this.engine.addDrumBank();
@@ -197,7 +154,6 @@ export class App {
     ]);
   }
 
-  /** (Re)build the pad buttons for the currently selected bank. */
   private renderPads() {
     this.padGrid.innerHTML = "";
     this.padEls = [];
@@ -207,7 +163,6 @@ export class App {
         el("span", {}, [track.settings.name]),
       ]) as HTMLButtonElement;
       if (!track.buffer) pad.classList.add("empty");
-
       pad.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         this.selectPad(i);
@@ -218,7 +173,6 @@ export class App {
       pad.addEventListener("pointerup", clearFlash);
       pad.addEventListener("pointerleave", clearFlash);
       pad.addEventListener("pointercancel", clearFlash);
-
       this.padEls.push(pad);
       this.padGrid.append(pad);
     });
@@ -229,7 +183,7 @@ export class App {
     this.refreshSelection();
   }
 
-  // ---- Step sequencer -----------------------------------------------------
+  // ---- Step sequencer (shared by all banks) -------------------------------
 
   private buildSequencer(): HTMLElement {
     const plockBtn = el("button", { class: "ctrl" }, ["P-LOCK"]) as HTMLButtonElement;
@@ -238,14 +192,12 @@ export class App {
       plockBtn.classList.toggle("active", this.plockMode);
       this.refreshSteps();
     });
-
     this.seqControls = el("div", { class: "row" });
     this.stepGrid = el("div", { class: "steps" });
     this.stepEls = [];
-
     return el("section", {}, [
       el("div", { class: "row", style: "justify-content:space-between" }, [
-        el("h2", { class: "section-title" }, ["Sequence (drums)"]),
+        el("h2", { class: "section-title" }, ["Sequence"]),
         plockBtn,
       ]),
       this.seqControls,
@@ -253,21 +205,15 @@ export class App {
     ]);
   }
 
-  /** Per-track loop length control — the key to polyrhythms. */
   private renderStepControls() {
     this.seqControls.innerHTML = "";
     const track = this.track();
     if (!track) return;
     this.seqControls.append(
       slider({
-        label: "STEPS (loop length)",
-        min: 1,
-        max: 32,
-        step: 1,
-        value: track.length,
+        label: "STEPS (loop length)", min: 1, max: 32, step: 1, value: track.length,
         format: (v) => `${v}`,
         onInput: (v) => {
-          // Loop length is shared by every pad in this drum machine.
           this.bank().tracks.forEach((t) => t.setLength(v));
           if (this.selectedStep >= v) this.selectedStep = 0;
           this.renderStepGrid();
@@ -277,7 +223,6 @@ export class App {
     );
   }
 
-  /** (Re)build the step cells for the selected track's current length. */
   private renderStepGrid() {
     this.stepGrid.innerHTML = "";
     this.stepEls = [];
@@ -310,87 +255,6 @@ export class App {
     this.refreshSteps();
   }
 
-  // ---- Piano roll (melodic) ----------------------------------------------
-
-  private buildPianoRoll(): HTMLElement {
-    this.pianoRoll.onAudition = (pitch) => {
-      this.activeNote = pitch;
-      this.engine.playNote(this.selectedBank, this.selectedPad, pitch, 1);
-      this.refreshKeyHighlights();
-    };
-    return el("section", {}, [
-      el("h2", { class: "section-title" }, [
-        "Piano roll — tap to place notes, tap a note to remove",
-      ]),
-      this.pianoRoll.root,
-    ]);
-  }
-
-  // ---- Melodic keyboard ---------------------------------------------------
-
-  private buildKeyboard(): HTMLElement {
-    this.keysPanel = el("div", { class: "panel" });
-    const section = el("section", {}, [
-      el("h2", { class: "section-title" }, [
-        "Keyboard — set a base pitch, then play/sequence the sample chromatically",
-      ]),
-      this.keysPanel,
-    ]);
-    this.renderKeysPanel();
-    return section;
-  }
-
-  private renderKeysPanel() {
-    const track = this.track();
-    this.keysPanel.innerHTML = "";
-    this.keyEls = [];
-    if (!track) return;
-
-    // Base-pitch (root) control. The root note plays the sample untransposed.
-    const rootRow = el("div", { class: "row" }, [
-      slider({
-        label: "BASE PITCH (ROOT)",
-        min: KEY_LOW,
-        max: KEY_HIGH,
-        step: 1,
-        value: track.settings.rootNote,
-        format: (v) => midiToName(v),
-        onInput: (v) => {
-          this.applyTrackSetting((t) => (t.settings.rootNote = v));
-          this.refreshKeyHighlights();
-        },
-      }),
-      el("span", { class: "hint" }, ["Tap keys to audition · KEYS mode writes notes to steps"]),
-    ]);
-
-    const keyboard = el("div", { class: "keys" });
-    for (let n = KEY_LOW; n <= KEY_HIGH; n++) {
-      const key = el("button", {
-        class: `key ${isBlackKey(n) ? "black" : "white"}`,
-      }, [midiToName(n)]) as HTMLButtonElement;
-      key.addEventListener("pointerdown", (e) => {
-        e.preventDefault();
-        this.activeNote = n;
-        this.engine.playNote(this.selectedBank, this.selectedPad, n, 1);
-        this.refreshKeyHighlights();
-      });
-      this.keyEls.push({ note: n, el: key });
-      keyboard.append(key);
-    }
-
-    this.keysPanel.append(rootRow, keyboard);
-    this.refreshKeyHighlights();
-  }
-
-  private refreshKeyHighlights() {
-    const track = this.track();
-    const root = track?.settings.rootNote ?? 60;
-    this.keyEls.forEach(({ note, el: keyEl }) => {
-      keyEl.classList.toggle("root", note === root);
-      keyEl.classList.toggle("active", note === this.activeNote);
-    });
-  }
-
   // ---- Per-step detail panel ---------------------------------------------
 
   private buildStepPanel(): HTMLElement {
@@ -408,46 +272,27 @@ export class App {
     this.stepPanel.innerHTML = "";
     if (!track) return;
     const step = track.steps[this.selectedStep];
-
     const allBtn = el("button", { class: "ctrl" }, ["ALL STEPS"]) as HTMLButtonElement;
     allBtn.classList.toggle("active", this.applyAllSteps);
     allBtn.addEventListener("click", () => {
       this.applyAllSteps = !this.applyAllSteps;
       allBtn.classList.toggle("active", this.applyAllSteps);
     });
-
     this.stepPanel.append(
       el("div", { class: "row", style: "justify-content:space-between" }, [
-        el("span", { class: "hint" }, [
-          `Editing ${track.settings.name} · step ${this.selectedStep + 1}`,
-        ]),
+        el("span", { class: "hint" }, [`Editing ${track.settings.name} · step ${this.selectedStep + 1}`]),
         allBtn,
       ]),
       el("div", { class: "row" }, [
-        slider({
-          label: "PITCH",
-          min: -24,
-          max: 24,
-          step: 1,
-          value: step.pitch,
+        slider({ label: "PITCH", min: -24, max: 24, step: 1, value: step.pitch,
           format: (v) => `${v > 0 ? "+" : ""}${v} st`,
           onInput: (v) => this.applyStepSetting((s) => (s.pitch = v)),
         }),
-        slider({
-          label: "CHANCE",
-          min: 0,
-          max: 1,
-          step: 0.05,
-          value: step.probability,
+        slider({ label: "CHANCE", min: 0, max: 1, step: 0.05, value: step.probability,
           format: (v) => `${Math.round(v * 100)}%`,
           onInput: (v) => this.applyStepSetting((s) => (s.probability = v)),
         }),
-        slider({
-          label: "VELOCITY",
-          min: 0,
-          max: 1,
-          step: 0.05,
-          value: step.velocity,
+        slider({ label: "VELOCITY", min: 0, max: 1, step: 0.05, value: step.velocity,
           format: (v) => `${Math.round(v * 100)}%`,
           onInput: (v) => this.applyStepSetting((s) => (s.velocity = v)),
         }),
@@ -455,7 +300,6 @@ export class App {
     );
   }
 
-  /** Apply a step edit to just the selected step, or all steps if ALL STEPS is on. */
   private applyStepSetting(fn: (s: Step) => void) {
     const track = this.track();
     if (!track) return;
@@ -481,80 +325,43 @@ export class App {
     this.trackPanel.innerHTML = "";
     if (!track) return;
     const s = track.settings;
-
     const allBtn = el("button", { class: "ctrl" }, ["ALL PADS"]) as HTMLButtonElement;
     allBtn.classList.toggle("active", this.applyAllPads);
     allBtn.addEventListener("click", () => {
       this.applyAllPads = !this.applyAllPads;
       allBtn.classList.toggle("active", this.applyAllPads);
     });
-
     this.trackPanel.append(
       el("div", { class: "row", style: "justify-content:space-between" }, [
         el("span", { class: "hint" }, [`${s.name} — ${this.bank().name} bank`]),
         allBtn,
       ]),
       el("div", { class: "row" }, [
-        slider({
-          label: "VOLUME",
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: s.gain,
+        slider({ label: "VOLUME", min: 0, max: 1, step: 0.01, value: s.gain,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.gain = v)),
         }),
-        slider({
-          label: "PAN",
-          min: -1,
-          max: 1,
-          step: 0.05,
-          value: s.pan,
+        slider({ label: "PAN", min: -1, max: 1, step: 0.05, value: s.pan,
           format: (v) => v.toFixed(2),
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.pan = v)),
         }),
-        slider({
-          label: "CUTOFF",
-          min: 100,
-          max: 18000,
-          step: 10,
-          value: s.cutoff,
+        slider({ label: "CUTOFF", min: 100, max: 18000, step: 10, value: s.cutoff,
           format: (v) => `${Math.round(v)}Hz`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.cutoff = v)),
         }),
-        slider({
-          label: "RESO",
-          min: 0.1,
-          max: 20,
-          step: 0.1,
-          value: s.resonance,
+        slider({ label: "RESO", min: 0.1, max: 20, step: 0.1, value: s.resonance,
           format: (v) => v.toFixed(1),
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.resonance = v)),
         }),
-        slider({
-          label: "PITCH",
-          min: 0.25,
-          max: 2,
-          step: 0.01,
-          value: s.playbackRate,
+        slider({ label: "PITCH", min: 0.25, max: 2, step: 0.01, value: s.playbackRate,
           format: (v) => `${v.toFixed(2)}x`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.playbackRate = v)),
         }),
-        slider({
-          label: "DELAY",
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: s.delaySend,
+        slider({ label: "DELAY", min: 0, max: 1, step: 0.01, value: s.delaySend,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.delaySend = v)),
         }),
-        slider({
-          label: "REVERB",
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: s.reverbSend,
+        slider({ label: "REVERB", min: 0, max: 1, step: 0.01, value: s.reverbSend,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.reverbSend = v)),
         }),
@@ -562,15 +369,11 @@ export class App {
     );
   }
 
-  /** Apply a sound edit to just the selected pad, or all pads in the bank if ALL PADS is on. */
   private applyTrackSetting(fn: (t: Track) => void) {
     const current = this.track();
     if (!current) return;
     const targets = this.applyAllPads ? this.bank().tracks : [current];
-    targets.forEach((t) => {
-      fn(t);
-      t.applySettings();
-    });
+    targets.forEach((t) => { fn(t); t.applySettings(); });
   }
 
   // ---- Master FX ----------------------------------------------------------
@@ -578,76 +381,28 @@ export class App {
   private buildMasterPanel(): HTMLElement {
     const panel = el("div", { class: "panel" });
     const m = () => this.engine.master;
-
-    // Local crush state so the three params can be set together.
-    let bits = 16;
-    let reduction = 1;
-    let crushMix = 1;
+    let bits = 16, reduction = 1, crushMix = 1;
     const pushCrush = () => m().setCrush(bits, reduction, crushMix);
-
     panel.append(
       el("div", { class: "row" }, [
-        slider({
-          label: "CRUSH BITS",
-          min: 1,
-          max: 16,
-          step: 1,
-          value: bits,
-          onInput: (v) => {
-            bits = v;
-            pushCrush();
-          },
+        slider({ label: "CRUSH BITS", min: 1, max: 16, step: 1, value: bits,
+          onInput: (v) => { bits = v; pushCrush(); },
         }),
-        slider({
-          label: "SR REDUCE",
-          min: 1,
-          max: 40,
-          step: 1,
-          value: reduction,
-          format: (v) => `${v}x`,
-          onInput: (v) => {
-            reduction = v;
-            pushCrush();
-          },
+        slider({ label: "SR REDUCE", min: 1, max: 40, step: 1, value: reduction,
+          format: (v) => `${v}x`, onInput: (v) => { reduction = v; pushCrush(); },
         }),
-        slider({
-          label: "CRUSH MIX",
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: crushMix,
+        slider({ label: "CRUSH MIX", min: 0, max: 1, step: 0.01, value: crushMix,
           format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => {
-            crushMix = v;
-            pushCrush();
-          },
+          onInput: (v) => { crushMix = v; pushCrush(); },
         }),
-        slider({
-          label: "MASTER FILTER",
-          min: 200,
-          max: 20000,
-          step: 10,
-          value: 20000,
-          format: (v) => `${Math.round(v)}Hz`,
-          onInput: (v) => m().setFilter(v),
+        slider({ label: "MASTER FILTER", min: 200, max: 20000, step: 10, value: 20000,
+          format: (v) => `${Math.round(v)}Hz`, onInput: (v) => m().setFilter(v),
         }),
-        slider({
-          label: "DRIVE",
-          min: 0,
-          max: 1,
-          step: 0.01,
-          value: 0,
-          format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => m().setDrive(v),
+        slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: 0,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDrive(v),
         }),
-        slider({
-          label: "DELAY FBK",
-          min: 0,
-          max: 0.95,
-          step: 0.01,
-          value: 0.35,
-          format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => m().setDelayFeedback(v),
+        slider({ label: "DELAY FBK", min: 0, max: 0.95, step: 0.01, value: 0.35,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDelayFeedback(v),
         }),
       ]),
     );
@@ -668,28 +423,16 @@ export class App {
       on: () => this.engine.master.setCrush(4, 12, 1),
       off: () => this.engine.master.setCrush(16, 1, 1),
     });
-
     return el("section", {}, [
       el("h2", { class: "section-title" }, ["Performance — hold to apply"]),
       el("div", { class: "row" }, [filterBtn, crushBtn]),
     ]);
   }
 
-  private makePerfButton(
-    label: string,
-    handlers: { on: () => void; off: () => void },
-  ): HTMLButtonElement {
+  private makePerfButton(label: string, handlers: { on: () => void; off: () => void }): HTMLButtonElement {
     const btn = el("button", { class: "perf" }, [label]) as HTMLButtonElement;
-    const press = (e: Event) => {
-      e.preventDefault();
-      btn.classList.add("held");
-      handlers.on();
-    };
-    const release = () => {
-      if (!btn.classList.contains("held")) return;
-      btn.classList.remove("held");
-      handlers.off();
-    };
+    const press = (e: Event) => { e.preventDefault(); btn.classList.add("held"); handlers.on(); };
+    const release = () => { if (!btn.classList.contains("held")) return; btn.classList.remove("held"); handlers.off(); };
     btn.addEventListener("pointerdown", press);
     btn.addEventListener("pointerup", release);
     btn.addEventListener("pointerleave", release);
@@ -700,14 +443,9 @@ export class App {
   // ---- Sample loading -----------------------------------------------------
 
   private buildSampleTools(): HTMLElement {
-    const chopInput = el("input", {
-      type: "file",
-      accept: "audio/*",
-      style: "display:none",
-    }) as HTMLInputElement;
+    const chopInput = el("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
     chopInput.addEventListener("change", async () => {
-      const file = chopInput.files?.[0];
-      if (!file) return;
+      const file = chopInput.files?.[0]; if (!file) return;
       const n = await this.engine.loadAndSlice(file);
       this.showSampleBank();
       alert(`Chopped into ${n} slices across the SAMPLES bank.`);
@@ -715,14 +453,9 @@ export class App {
     const chopBtn = el("button", { class: "ctrl" }, ["Chop file → samples"]);
     chopBtn.addEventListener("click", () => chopInput.click());
 
-    const padInput = el("input", {
-      type: "file",
-      accept: "audio/*",
-      style: "display:none",
-    }) as HTMLInputElement;
+    const padInput = el("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
     padInput.addEventListener("change", async () => {
-      const file = padInput.files?.[0];
-      if (!file) return;
+      const file = padInput.files?.[0]; if (!file) return;
       const pad = this.sampleTargetPad();
       await this.engine.loadOntoPad(pad, file);
       this.showSampleBank(pad);
@@ -735,19 +468,15 @@ export class App {
       this.buildRecorder(),
       el("div", { class: "row" }, [chopBtn, padBtn, chopInput, padInput]),
       el("p", { class: "hint" }, [
-        "Recordings and loaded files go to the SAMPLES bank — your drum kit is " +
-          "left untouched. Chop uses transient detection to auto-slice across the " +
-          "sample pads.",
+        "Recordings and loaded files go to the SAMPLES bank — your drum kit is left untouched. Chop uses transient detection to auto-slice across the sample pads.",
       ]),
     ]);
   }
 
-  /** Which sample pad to load onto: the selected one if we're on the sample bank. */
   private sampleTargetPad(): number {
     return this.selectedBank === this.engine.sampleBankIndex ? this.selectedPad : 0;
   }
 
-  /** Switch the view to the SAMPLES bank and refresh everything. */
   private showSampleBank(pad = 0) {
     this.selectedBank = this.engine.sampleBankIndex;
     this.selectedPad = pad;
@@ -760,31 +489,22 @@ export class App {
 
   private buildSampleEditor(): HTMLElement {
     this.editorReadout = el("span", { class: "hint" }, ["no sample loaded"]);
-
     this.editor.onChange = () => this.refreshEditorReadout();
 
-    // Open a file directly into the editor.
-    const fileInput = el("input", {
-      type: "file",
-      accept: "audio/*",
-      style: "display:none",
-    }) as HTMLInputElement;
+    const fileInput = el("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
     fileInput.addEventListener("change", async () => {
-      const file = fileInput.files?.[0];
-      if (!file) return;
+      const file = fileInput.files?.[0]; if (!file) return;
       const buf = await this.engine.decodeToBuffer(file);
       this.setEditorBuffer(buf);
     });
     const openBtn = el("button", { class: "ctrl" }, ["Open file…"]);
     openBtn.addEventListener("click", () => fileInput.click());
 
-    // Use whatever the last recording was.
     const useRecBtn = el("button", { class: "ctrl" }, ["Use last recording"]);
     useRecBtn.addEventListener("click", () => {
       if (this.engine.lastRecording) this.setEditorBuffer(this.engine.lastRecording);
     });
 
-    // Preview the selected region.
     const previewBtn = el("button", { class: "ctrl" }, ["▶ Preview"]);
     previewBtn.addEventListener("click", () => {
       if (!this.editorBuffer) return;
@@ -792,14 +512,12 @@ export class App {
       this.engine.previewRegion(this.editorBuffer, s, e);
     });
 
-    // Target sample pad picker.
     this.editorTarget = el("select", { class: "ctrl" }) as HTMLSelectElement;
     const sampleTracks = this.engine.banks[this.engine.sampleBankIndex].tracks;
     sampleTracks.forEach((_, i) => {
       this.editorTarget.append(el("option", { value: String(i) }, [`pad ${i + 1}`]));
     });
 
-    // Assign the selection to the chosen sample pad.
     const assignBtn = el("button", { class: "ctrl active" }, ["Assign to pad"]);
     assignBtn.addEventListener("click", () => {
       if (!this.editorBuffer) return;
@@ -811,15 +529,11 @@ export class App {
     });
 
     return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Sample editor — drag to select a moment"]),
+      el("h2", { class: "section-title" }, ["Sample editor — drag to select a region"]),
       this.editor.root,
       el("div", { class: "row" }, [this.editorReadout]),
       el("div", { class: "row" }, [openBtn, useRecBtn, previewBtn, fileInput]),
-      el("div", { class: "row" }, [
-        el("span", { class: "hint" }, ["→ target"]),
-        this.editorTarget,
-        assignBtn,
-      ]),
+      el("div", { class: "row" }, [el("span", { class: "hint" }, ["→ target"]), this.editorTarget, assignBtn]),
     ]);
   }
 
@@ -830,43 +544,26 @@ export class App {
   }
 
   private refreshEditorReadout() {
-    if (!this.editorBuffer) {
-      this.editorReadout.textContent = "no sample loaded";
-      return;
-    }
+    if (!this.editorBuffer) { this.editorReadout.textContent = "no sample loaded"; return; }
     const [s, e] = this.editor.getRegion();
-    this.editorReadout.textContent = `selection ${s.toFixed(3)}s – ${e.toFixed(3)}s  (${(
-      e - s
-    ).toFixed(3)}s)`;
+    this.editorReadout.textContent = `selection ${s.toFixed(3)}s – ${e.toFixed(3)}s  (${(e - s).toFixed(3)}s)`;
   }
 
   // ---- Mic recording UI ---------------------------------------------------
 
   private buildRecorder(): HTMLElement {
     if (!isRecordingSupported()) {
-      return el("p", { class: "hint" }, [
-        "Mic recording needs a browser with MediaRecorder over HTTPS.",
-      ]);
+      return el("p", { class: "hint" }, ["Mic recording needs a browser with MediaRecorder over HTTPS."]);
     }
-
     const recBtn = el("button", { class: "ctrl" }, ["● Record"]) as HTMLButtonElement;
     const status = el("span", { class: "hint" }, ["ready"]);
-
-    const chopRecBtn = el("button", { class: "ctrl" }, [
-      "Chop recording → samples",
-    ]) as HTMLButtonElement;
-    const padRecBtn = el("button", { class: "ctrl" }, [
-      "Recording → sample pad",
-    ]) as HTMLButtonElement;
+    const chopRecBtn = el("button", { class: "ctrl" }, ["Chop recording → samples"]) as HTMLButtonElement;
+    const padRecBtn = el("button", { class: "ctrl" }, ["Recording → sample pad"]) as HTMLButtonElement;
     chopRecBtn.disabled = true;
     padRecBtn.disabled = true;
-
     let timer: number | null = null;
     let startedAt = 0;
-    const tick = () => {
-      const secs = (performance.now() - startedAt) / 1000;
-      status.textContent = `recording… ${secs.toFixed(1)}s`;
-    };
+    const tick = () => { status.textContent = `recording… ${((performance.now() - startedAt) / 1000).toFixed(1)}s`; };
 
     recBtn.addEventListener("click", async () => {
       if (this.engine.isRecording) {
@@ -878,26 +575,14 @@ export class App {
           status.textContent = `recorded ${buf.duration.toFixed(1)}s`;
           chopRecBtn.disabled = false;
           padRecBtn.disabled = false;
-          this.setEditorBuffer(buf); // load the take into the waveform editor
-        } catch (err) {
-          console.error(err);
-          status.textContent = "recording failed";
-        }
-        recBtn.disabled = false;
-        recBtn.textContent = "● Record";
-        recBtn.classList.remove("active");
+          this.setEditorBuffer(buf);
+        } catch (err) { console.error(err); status.textContent = "recording failed"; }
+        recBtn.disabled = false; recBtn.textContent = "● Record"; recBtn.classList.remove("active");
       } else {
-        try {
-          await this.engine.startRecording();
-        } catch (err) {
-          console.error(err);
-          status.textContent = "mic permission denied";
-          return;
-        }
-        recBtn.textContent = "■ Stop";
-        recBtn.classList.add("active");
-        startedAt = performance.now();
-        timer = window.setInterval(tick, 100);
+        try { await this.engine.startRecording(); }
+        catch (err) { console.error(err); status.textContent = "mic permission denied"; return; }
+        recBtn.textContent = "■ Stop"; recBtn.classList.add("active");
+        startedAt = performance.now(); timer = window.setInterval(tick, 100);
       }
     });
 
@@ -907,7 +592,6 @@ export class App {
       this.showSampleBank();
       status.textContent = `chopped into ${n} slices`;
     });
-
     padRecBtn.addEventListener("click", () => {
       if (!this.engine.lastRecording) return;
       const pad = this.sampleTargetPad();
@@ -915,7 +599,6 @@ export class App {
       this.showSampleBank(pad);
       status.textContent = "loaded onto sample pad";
     });
-
     return el("div", { class: "panel" }, [
       el("div", { class: "row" }, [recBtn, status]),
       el("div", { class: "row" }, [chopRecBtn, padRecBtn]),
@@ -931,61 +614,24 @@ export class App {
   private refreshSelection() {
     this.refreshBankButtons();
     this.padEls.forEach((p, i) => p.classList.toggle("selected", i === this.selectedPad));
-
-    // Drum bank shows the step grid; sample bank shows the melodic piano roll.
-    const melodic = this.bank()?.kind === "sample";
-    if (this.keysSection) {
-      this.keysSection.style.display = melodic ? "" : "none";
-      this.rollSection.style.display = melodic ? "" : "none";
-      this.stepSection.style.display = melodic ? "none" : "";
-      this.stepPanelSection.style.display = melodic ? "none" : "";
-    }
-
-    if (melodic) {
-      const track = this.track();
-      if (track) this.pianoRoll.setTrack(track);
-      if (this.keysPanel) this.renderKeysPanel();
-    } else {
-      this.renderStepControls();
-      this.renderStepGrid();
-      this.refreshStepPanel();
-    }
+    this.renderStepControls();
+    this.renderStepGrid();
+    this.refreshStepPanel();
     this.refreshTrackPanel();
   }
 
   private refreshSteps() {
     const track = this.track();
     if (!track) return;
-    const root = track.settings.rootNote;
     this.stepEls.forEach((cell, i) => {
       const step = track.steps[i];
       cell.classList.toggle("on", step.on);
       cell.classList.toggle("selected", this.plockMode && i === this.selectedStep);
-      // Show the note name on any repitched step.
-      const showNote = step.on && step.pitch !== 0;
-      cell.textContent = showNote ? midiToName(root + step.pitch) : "";
+      cell.textContent = "";
     });
   }
 
   private highlightPlayhead(absStep: number) {
-    const melodic = this.bank()?.kind === "sample";
-    if (melodic) {
-      // Clear the step grid highlight if it was showing, then drive the roll.
-      if (this.lastPlayhead >= 0 && this.stepEls[this.lastPlayhead]) {
-        this.stepEls[this.lastPlayhead].classList.remove("playing");
-      }
-      this.lastPlayhead = -1;
-      const track = this.track();
-      if (absStep < 0 || !track) {
-        this.pianoRoll.setPlayhead(-1);
-        return;
-      }
-      const len = track.length;
-      this.pianoRoll.setPlayhead(((absStep % len) + len) % len);
-      return;
-    }
-
-    // Drum step grid: wrap by the selected track's own loop length.
     const track = this.track();
     const len = track ? track.length : this.engine.steps;
     const local = absStep < 0 ? -1 : ((absStep % len) + len) % len;

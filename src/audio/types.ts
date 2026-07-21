@@ -31,11 +31,6 @@ export interface TrackSettings {
   reverbSend: number;
   /** Base playback rate multiplier (before per-step pitch). */
   playbackRate: number;
-  /**
-   * MIDI note that plays the sample at its recorded pitch. Notes above/below
-   * this repitch the sample chromatically. Used by the melodic keyboard.
-   */
-  rootNote: number;
   /** Amplitude envelope (seconds). */
   attack: number;
   release: number;
@@ -54,7 +49,6 @@ export function defaultTrackSettings(name: string): TrackSettings {
     delaySend: 0,
     reverbSend: 0,
     playbackRate: 1,
-    rootNote: 60, // C4
     attack: 0.001,
     release: 0.25,
     chokeGroup: 0,
@@ -63,19 +57,4 @@ export function defaultTrackSettings(name: string): TrackSettings {
 
 export function defaultStep(): Step {
   return { on: false, pitch: 0, probability: 1, velocity: 1 };
-}
-
-/**
- * A note in a melodic (piano-roll) track. Unlike a Step, a note has an absolute
- * pitch, a start position, and a length measured in steps — DAW-style.
- */
-export interface Note {
-  /** Absolute MIDI note number. */
-  pitch: number;
-  /** Start position in steps from the top of the loop. */
-  start: number;
-  /** Length in steps (>= 1). Gates how long the sample sounds. */
-  length: number;
-  /** 0..1 velocity/level. */
-  velocity: number;
 }

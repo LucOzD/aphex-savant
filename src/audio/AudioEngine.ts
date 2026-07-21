@@ -15,8 +15,6 @@ export interface BankConfig {
 
 export interface EngineConfig {
   steps: number;
-  /** Loop length in steps for melodic (piano-roll) tracks. Defaults to steps*2. */
-  melodicSteps?: number;
   banks: BankConfig[];
 }
 
@@ -29,7 +27,6 @@ export interface Bank {
 
 const DEFAULT_CONFIG: EngineConfig = {
   steps: 16,
-  melodicSteps: 32, // 2 bars for the melodic piano roll
   banks: [
     { name: "DRUMS 1", pads: 16, kind: "synth" },
     { name: "SAMPLES", pads: 16, kind: "sample" },
@@ -100,11 +97,6 @@ export class AudioEngine {
         chokeGroup: kit && i % 8 === 2 ? 1 : 0,
       });
       if (kit) track.setBuffer(kit[i]);
-      // Sample bank = melodic piano-roll instruments over a longer timeline.
-      if (bankCfg.kind === "sample") {
-        track.melodic = true;
-        track.setLength(this.config.melodicSteps ?? this.config.steps * 2);
-      }
       bank.tracks.push(track);
     }
     return bank;
@@ -135,11 +127,6 @@ export class AudioEngine {
 
   get steps(): number {
     return this.config.steps;
-  }
-
-  /** Duration of one step in seconds (from the scheduler tempo). */
-  get stepDuration(): number {
-    return this.scheduler.stepDuration;
   }
 
   // ---- Transport ----------------------------------------------------------
@@ -189,32 +176,14 @@ export class AudioEngine {
     track.trigger(this.ctx.currentTime + 0.005, 0, velocity);
   }
 
-  /** Live-play a pad chromatically at a MIDI note, relative to its root. */
-  playNote(bankIndex: number, padIndex: number, midiNote: number, velocity = 1) {
-    const track = this.banks[bankIndex]?.tracks[padIndex];
-    if (!track) return;
-    const semis = midiNote - track.settings.rootNote;
-    track.trigger(this.ctx.currentTime + 0.005, semis, velocity);
-  }
-
   private handleStep(absStep: number, time: number) {
-    const stepDur = this.stepDuration;
     for (const track of this.allTracks) {
       const len = track.length;
       const local = ((absStep % len) + len) % len;
-      if (track.melodic) {
-        // Piano-roll: fire any notes that start on this local step.
-        for (const note of track.notes) {
-          if (note.start !== local) continue;
-          const semis = note.pitch - track.settings.rootNote;
-          track.trigger(time, semis, note.velocity, note.length * stepDur);
-        }
-      } else {
-        const s = track.steps[local];
-        if (!s || !s.on) continue;
-        if (s.probability < 1 && Math.random() > s.probability) continue;
-        track.trigger(time, s.pitch, s.velocity);
-      }
+      const s = track.steps[local];
+      if (!s || !s.on) continue;
+      if (s.probability < 1 && Math.random() > s.probability) continue;
+      track.trigger(time, s.pitch, s.velocity);
     }
     // Schedule the UI highlight to line up with the audio.
     const delayMs = Math.max(0, (time - this.ctx.currentTime) * 1000);
