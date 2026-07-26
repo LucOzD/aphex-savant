@@ -1,6 +1,7 @@
 import type { AudioEngine } from "../audio/AudioEngine.ts";
 import type { Track } from "../audio/Track.ts";
 import type { Step } from "../audio/types.ts";
+import type { SampleEntry } from "../audio/SampleLibrary.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
 import { el, slider } from "./dom.ts";
@@ -37,6 +38,11 @@ export class App {
   private editorReadout!: HTMLElement;
   private editorTarget!: HTMLSelectElement;
 
+  // Library drawer.
+  private drawer!: HTMLElement;
+  private drawerList!: HTMLElement;
+  private drawerOpen = false;
+
   constructor(engine: AudioEngine, root: HTMLElement) {
     this.engine = engine;
     this.root = root;
@@ -59,6 +65,7 @@ export class App {
       this.buildSampleEditor(),
     );
     this.root.append(main);
+    this.root.append(this.buildDrawer());
     this.renderPads();
     this.refreshSelection();
     requestAnimationFrame(() => this.editor.redraw());
@@ -101,7 +108,20 @@ export class App {
     return el("div", { class: "topbar" }, [
       el("span", { class: "title" }, ["POCKET SAMPLER"]),
       playBtn, tempo, swing,
+      this.buildLibraryToggle(),
     ]);
+  }
+
+  private buildLibraryToggle(): HTMLElement {
+    const btn = el("button", { class: "ctrl" }, ["📁 Samples"]) as HTMLButtonElement;
+    btn.addEventListener("click", () => this.toggleDrawer());
+    return btn;
+  }
+
+  private toggleDrawer() {
+    this.drawerOpen = !this.drawerOpen;
+    this.drawer.classList.toggle("open", this.drawerOpen);
+    if (this.drawerOpen) this.refreshDrawer();
   }
 
   // ---- Bank switcher ------------------------------------------------------
@@ -603,6 +623,47 @@ export class App {
       el("div", { class: "row" }, [recBtn, status]),
       el("div", { class: "row" }, [chopRecBtn, padRecBtn]),
     ]);
+  }
+
+  // ---- Library drawer (slides in from the right) --------------------------
+
+  private buildDrawer(): HTMLElement {
+    this.drawerList = el("div", { class: "drawer-list" });
+    const closeBtn = el("button", { class: "ctrl" }, ["✕ Close"]) as HTMLButtonElement;
+    closeBtn.addEventListener("click", () => this.toggleDrawer());
+    this.drawer = el("aside", { class: "drawer" }, [
+      el("div", { class: "drawer-head" }, [
+        el("h2", { class: "section-title" }, ["Sample library"]),
+        closeBtn,
+      ]),
+      el("p", { class: "hint" }, ["Tap a sample to load it onto the selected pad."]),
+      this.drawerList,
+    ]);
+    return this.drawer;
+  }
+
+  private async refreshDrawer() {
+    this.drawerList.innerHTML = "";
+    const entries = await this.engine.listLibrary();
+    if (entries.length === 0) {
+      this.drawerList.append(el("p", { class: "hint" }, ["No samples yet. Record or load a file."]));
+      return;
+    }
+    for (const entry of entries) {
+      const item = el("button", { class: "drawer-item" }, [
+        el("span", { class: "drawer-name" }, [entry.name]),
+        el("span", { class: "hint" }, [new Date(entry.addedAt).toLocaleDateString()]),
+      ]) as HTMLButtonElement;
+      item.addEventListener("click", () => this.loadFromLibrary(entry));
+      this.drawerList.append(item);
+    }
+  }
+
+  private async loadFromLibrary(entry: SampleEntry) {
+    const pad = this.selectedBank === this.engine.sampleBankIndex ? this.selectedPad : 0;
+    await this.engine.loadLibraryEntry(entry, pad);
+    this.showSampleBank(pad);
+    this.toggleDrawer();
   }
 
   // ---- Selection + refresh helpers ---------------------------------------

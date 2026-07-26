@@ -4,6 +4,7 @@ import { Track } from "./Track.ts";
 import { generateDrumKit, drumName } from "./synthDrums.ts";
 import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
 import { Recorder } from "./Recorder.ts";
+import { SampleLibrary, type SampleEntry } from "./SampleLibrary.ts";
 
 export type BankKind = "synth" | "sample";
 
@@ -41,6 +42,7 @@ export class AudioEngine {
   readonly scheduler: Scheduler;
   readonly config: EngineConfig;
   readonly recorder = new Recorder();
+  readonly library = new SampleLibrary();
 
   /** The most recent mic recording, kept so it can be chopped or reassigned. */
   lastRecording: AudioBuffer | null = null;
@@ -78,6 +80,8 @@ export class AudioEngine {
 
     this.master = new MasterChain(this.ctx, crushNode);
     this.updateDelayTime();
+
+    await this.library.init();
 
     for (const bankCfg of this.config.banks) {
       this.banks.push(this.buildBank(bankCfg));
@@ -194,14 +198,18 @@ export class AudioEngine {
 
   /** Decode a user file and slice it across the sample pads by transients. */
   async loadAndSlice(file: File): Promise<number> {
-    const buffer = await this.decodeFile(file);
+    const raw = await file.arrayBuffer();
+    const buffer = await decodeAudio(this.ctx, raw);
+    await this.library.add(file.name, raw);
     return this.sliceBufferAcrossPads(buffer);
   }
 
   /** Load a single file onto one sample pad (whole sample, no slicing). */
   async loadOntoPad(padIndex: number, file: File): Promise<void> {
-    const buffer = await this.decodeFile(file);
+    const raw = await file.arrayBuffer();
+    const buffer = await decodeAudio(this.ctx, raw);
     const name = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
+    await this.library.add(file.name, raw);
     this.loadBufferOntoPad(padIndex, buffer, name);
   }
 
@@ -292,11 +300,24 @@ export class AudioEngine {
     await this.recorder.start();
   }
 
-  /** Stop capturing, decode the take, store it, and return the AudioBuffer. */
+  /** Stop capturing, decode the take, store it in the library, and return it. */
   async stopRecording(): Promise<AudioBuffer> {
     const blob = await this.recorder.stop();
-    const buffer = await decodeAudio(this.ctx, await blob.arrayBuffer());
+    const raw = await blob.arrayBuffer();
+    const buffer = await decodeAudio(this.ctx, raw);
     this.lastRecording = buffer;
+    await this.library.add("recording", raw);
     return buffer;
+  }
+
+  /** Load a sample from the library onto a pad in the samples bank. */
+  async loadLibraryEntry(entry: SampleEntry, padIndex: number): Promise<void> {
+    const buffer = await decodeAudio(this.ctx, entry.data);
+    this.loadBufferOntoPad(padIndex, buffer, entry.name.replace(/\.[^.]+$/, "").slice(0, 12));
+  }
+
+  /** List everything in the library (newest first). */
+  listLibrary(): Promise<SampleEntry[]> {
+    return this.library.list();
   }
 }
