@@ -351,6 +351,18 @@ export class App {
       this.applyAllPads = !this.applyAllPads;
       allBtn.classList.toggle("active", this.applyAllPads);
     });
+
+    // Filter type selector.
+    const filterType = el("select", { class: "ctrl" }) as HTMLSelectElement;
+    for (const t of ["lowpass", "highpass", "bandpass"]) {
+      const opt = el("option", { value: t }, [t.toUpperCase()]);
+      if (t === s.filterType) opt.setAttribute("selected", "");
+      filterType.append(opt);
+    }
+    filterType.addEventListener("change", () => {
+      this.applyTrackSetting((t) => (t.settings.filterType = filterType.value as "lowpass" | "highpass" | "bandpass"));
+    });
+
     this.trackPanel.append(
       el("div", { class: "row", style: "justify-content:space-between" }, [
         el("span", { class: "hint" }, [`${s.name} — ${this.bank().name} bank`]),
@@ -365,6 +377,13 @@ export class App {
           format: (v) => v.toFixed(2),
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.pan = v)),
         }),
+        slider({ label: "PITCH", min: 0.25, max: 2, step: 0.01, value: s.playbackRate,
+          format: (v) => `${v.toFixed(2)}x`,
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.playbackRate = v)),
+        }),
+      ]),
+      el("div", { class: "row" }, [
+        el("label", { class: "field" }, [el("span", {}, ["FILTER"]), filterType]),
         slider({ label: "CUTOFF", min: 100, max: 18000, step: 10, value: s.cutoff,
           format: (v) => `${Math.round(v)}Hz`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.cutoff = v)),
@@ -373,15 +392,23 @@ export class App {
           format: (v) => v.toFixed(1),
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.resonance = v)),
         }),
-        slider({ label: "PITCH", min: 0.25, max: 2, step: 0.01, value: s.playbackRate,
-          format: (v) => `${v.toFixed(2)}x`,
-          onInput: (v) => this.applyTrackSetting((t) => (t.settings.playbackRate = v)),
+      ]),
+      el("div", { class: "row" }, [
+        slider({ label: "ATTACK", min: 0.001, max: 0.5, step: 0.001, value: s.attack,
+          format: (v) => `${(v * 1000).toFixed(0)} ms`,
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.attack = v)),
         }),
-        slider({ label: "DELAY", min: 0, max: 1, step: 0.01, value: s.delaySend,
+        slider({ label: "RELEASE", min: 0.01, max: 2, step: 0.01, value: s.release,
+          format: (v) => `${(v * 1000).toFixed(0)} ms`,
+          onInput: (v) => this.applyTrackSetting((t) => (t.settings.release = v)),
+        }),
+      ]),
+      el("div", { class: "row" }, [
+        slider({ label: "DELAY SEND", min: 0, max: 1, step: 0.01, value: s.delaySend,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.delaySend = v)),
         }),
-        slider({ label: "REVERB", min: 0, max: 1, step: 0.01, value: s.reverbSend,
+        slider({ label: "REVERB SEND", min: 0, max: 1, step: 0.01, value: s.reverbSend,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.reverbSend = v)),
         }),
@@ -403,6 +430,14 @@ export class App {
     const m = () => this.engine.master;
     let bits = 16, reduction = 1, crushMix = 1;
     const pushCrush = () => m().setCrush(bits, reduction, crushMix);
+
+    // Filter type selector.
+    const filterType = el("select", { class: "ctrl" }) as HTMLSelectElement;
+    for (const t of ["lowpass", "highpass", "bandpass"]) {
+      filterType.append(el("option", { value: t }, [t.toUpperCase()]));
+    }
+    filterType.addEventListener("change", () => m().setFilterType(filterType.value as BiquadFilterType));
+
     panel.append(
       el("div", { class: "row" }, [
         slider({ label: "CRUSH BITS", min: 1, max: 16, step: 1, value: bits,
@@ -415,19 +450,47 @@ export class App {
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => { crushMix = v; pushCrush(); },
         }),
-        slider({ label: "MASTER FILTER", min: 200, max: 20000, step: 10, value: 20000,
+      ]),
+      el("div", { class: "row" }, [
+        el("label", { class: "field" }, [el("span", {}, ["FILTER TYPE"]), filterType]),
+        slider({ label: "FILTER FREQ", min: 200, max: 20000, step: 10, value: 20000,
           format: (v) => `${Math.round(v)}Hz`, onInput: (v) => m().setFilter(v),
+        }),
+        slider({ label: "FILTER Q", min: 0.1, max: 20, step: 0.1, value: 0.7,
+          format: (v) => v.toFixed(1), onInput: (v) => m().setFilter(20000, v),
         }),
         slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: 0,
           format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDrive(v),
         }),
+      ]),
+      el("div", { class: "row" }, [
         slider({ label: "DELAY FBK", min: 0, max: 0.95, step: 0.01, value: 0.35,
           format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDelayFeedback(v),
+        }),
+        slider({ label: "PHASER MIX", min: 0, max: 1, step: 0.01, value: 0,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setPhaserMix(v),
+        }),
+        slider({ label: "PHASER RATE", min: 0.05, max: 8, step: 0.05, value: 0.4,
+          format: (v) => `${v.toFixed(2)} Hz`, onInput: (v) => m().setPhaserRate(v),
+        }),
+        slider({ label: "PHASER DEPTH", min: 100, max: 3000, step: 10, value: 800,
+          format: (v) => `${Math.round(v)}`, onInput: (v) => m().setPhaserDepth(v),
+        }),
+      ]),
+      el("div", { class: "row" }, [
+        slider({ label: "CHORUS MIX", min: 0, max: 1, step: 0.01, value: 0,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setChorusMix(v),
+        }),
+        slider({ label: "CHORUS RATE", min: 0.1, max: 6, step: 0.1, value: 1.5,
+          format: (v) => `${v.toFixed(1)} Hz`, onInput: (v) => m().setChorusRate(v),
+        }),
+        slider({ label: "CHORUS DEPTH", min: 0.001, max: 0.015, step: 0.001, value: 0.004,
+          format: (v) => `${(v * 1000).toFixed(1)} ms`, onInput: (v) => m().setChorusDepth(v),
         }),
       ]),
     );
     return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Master FX"]),
+      el("h2", { class: "section-title" }, ["Master FX (universal)"]),
       panel,
     ]);
   }

@@ -31,6 +31,22 @@ export class MasterChain {
   private readonly delayFeedback: GainNode;
   private readonly delayTone: BiquadFilterNode;
 
+  // Phaser (chain of allpass filters modulated by an LFO).
+  private readonly phaserStages: BiquadFilterNode[];
+  private readonly phaserLfo: OscillatorNode;
+  private readonly phaserDepth: GainNode;
+  private readonly phaserWet: GainNode;
+  private readonly phaserDry: GainNode;
+  private readonly phaserMix: GainNode; // sum point
+
+  // Chorus (short modulated delay for width/thickening).
+  private readonly chorusDelay: DelayNode;
+  private readonly chorusLfo: OscillatorNode;
+  private readonly chorusDepth: GainNode;
+  private readonly chorusWet: GainNode;
+  private readonly chorusDry: GainNode;
+  private readonly chorusMix: GainNode;
+
   constructor(ctx: AudioContext, bitcrush: AudioWorkletNode | null) {
     this.ctx = ctx;
     this.bitcrush = bitcrush;
@@ -53,7 +69,8 @@ export class MasterChain {
     this.limiter.attack.value = 0.002;
     this.limiter.release.value = 0.15;
 
-    // Master chain wiring.
+    // Master chain wiring:
+    // input → bitcrush → filter → drive → phaser → chorus → limiter → output
     if (this.bitcrush) {
       this.input.connect(this.bitcrush);
       this.bitcrush.connect(this.filter);
@@ -62,7 +79,63 @@ export class MasterChain {
       this.preCrushGain.connect(this.filter);
     }
     this.filter.connect(this.drive);
-    this.drive.connect(this.limiter);
+
+    // Phaser: 4 cascaded allpass stages with LFO-modulated frequency.
+    this.phaserStages = [];
+    this.phaserLfo = ctx.createOscillator();
+    this.phaserDepth = ctx.createGain();
+    this.phaserWet = ctx.createGain();
+    this.phaserDry = ctx.createGain();
+    this.phaserMix = ctx.createGain();
+    this.phaserLfo.type = "sine";
+    this.phaserLfo.frequency.value = 0.4;
+    this.phaserDepth.gain.value = 800;
+    this.phaserWet.gain.value = 0; // phaser off by default
+    this.phaserDry.gain.value = 1;
+    this.phaserLfo.connect(this.phaserDepth);
+    this.phaserLfo.start();
+
+    let prevNode: AudioNode = this.drive;
+    for (let i = 0; i < 4; i++) {
+      const ap = ctx.createBiquadFilter();
+      ap.type = "allpass";
+      ap.frequency.value = 1000;
+      this.phaserDepth.connect(ap.frequency);
+      this.phaserStages.push(ap);
+      if (i === 0) this.drive.connect(ap);
+      else (prevNode as BiquadFilterNode).connect(ap);
+      prevNode = ap;
+    }
+    // Wet (phaser output) and dry (bypass) summed into phaserMix.
+    (prevNode as BiquadFilterNode).connect(this.phaserWet);
+    this.drive.connect(this.phaserDry);
+    this.phaserWet.connect(this.phaserMix);
+    this.phaserDry.connect(this.phaserMix);
+
+    // Chorus: short modulated delay mixed with dry.
+    this.chorusDelay = ctx.createDelay(0.05);
+    this.chorusDelay.delayTime.value = 0.012;
+    this.chorusLfo = ctx.createOscillator();
+    this.chorusLfo.type = "sine";
+    this.chorusLfo.frequency.value = 1.5;
+    this.chorusDepth = ctx.createGain();
+    this.chorusDepth.gain.value = 0.004;
+    this.chorusLfo.connect(this.chorusDepth);
+    this.chorusDepth.connect(this.chorusDelay.delayTime);
+    this.chorusLfo.start();
+    this.chorusWet = ctx.createGain();
+    this.chorusWet.gain.value = 0; // chorus off by default
+    this.chorusDry = ctx.createGain();
+    this.chorusDry.gain.value = 1;
+    this.chorusMix = ctx.createGain();
+
+    this.phaserMix.connect(this.chorusDelay);
+    this.chorusDelay.connect(this.chorusWet);
+    this.phaserMix.connect(this.chorusDry);
+    this.chorusWet.connect(this.chorusMix);
+    this.chorusDry.connect(this.chorusMix);
+
+    this.chorusMix.connect(this.limiter);
     this.limiter.connect(ctx.destination);
 
     // Delay send bus (tempo-set later via setDelayTime).
@@ -105,6 +178,10 @@ export class MasterChain {
     this.filter.Q.setValueAtTime(q, t);
   }
 
+  setFilterType(type: BiquadFilterType) {
+    this.filter.type = type;
+  }
+
   setDrive(amount: number) {
     this.drive.curve = makeDriveCurve(Math.max(0, Math.min(1, amount)));
   }
@@ -120,5 +197,43 @@ export class MasterChain {
       this.ctx.currentTime,
       0.02,
     );
+  }
+
+  // ---- Phaser controls ----------------------------------------------------
+
+  /** 0..1 mix (0 = off, 1 = full wet). */
+  setPhaserMix(mix: number) {
+    const t = this.ctx.currentTime;
+    this.phaserWet.gain.setTargetAtTime(Math.min(1, Math.max(0, mix)), t, 0.02);
+    this.phaserDry.gain.setTargetAtTime(1 - Math.min(1, Math.max(0, mix)), t, 0.02);
+  }
+
+  /** LFO rate in Hz. */
+  setPhaserRate(hz: number) {
+    this.phaserLfo.frequency.setTargetAtTime(hz, this.ctx.currentTime, 0.02);
+  }
+
+  /** LFO sweep depth (higher = wider sweep). */
+  setPhaserDepth(depth: number) {
+    this.phaserDepth.gain.setTargetAtTime(depth, this.ctx.currentTime, 0.02);
+  }
+
+  // ---- Chorus controls ----------------------------------------------------
+
+  /** 0..1 mix (0 = off, 1 = full wet). */
+  setChorusMix(mix: number) {
+    const t = this.ctx.currentTime;
+    this.chorusWet.gain.setTargetAtTime(Math.min(1, Math.max(0, mix)), t, 0.02);
+    this.chorusDry.gain.setTargetAtTime(1 - Math.min(1, Math.max(0, mix)), t, 0.02);
+  }
+
+  /** LFO rate in Hz. */
+  setChorusRate(hz: number) {
+    this.chorusLfo.frequency.setTargetAtTime(hz, this.ctx.currentTime, 0.02);
+  }
+
+  /** Modulation depth (controls detune amount). */
+  setChorusDepth(depth: number) {
+    this.chorusDepth.gain.setTargetAtTime(depth, this.ctx.currentTime, 0.02);
   }
 }
