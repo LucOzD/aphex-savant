@@ -3,6 +3,7 @@ import { Scheduler } from "./Scheduler.ts";
 import { Track } from "./Track.ts";
 import { generateDrumKit, drumName } from "./synthDrums.ts";
 import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
+import { audioBufferToWav } from "./wavEncode.ts";
 import { Recorder } from "./Recorder.ts";
 import { SampleLibrary, type SampleEntry } from "./SampleLibrary.ts";
 
@@ -297,16 +298,17 @@ export class AudioEngine {
   /** Begin capturing from the microphone. Throws if permission is denied. */
   async startRecording(): Promise<void> {
     await this.ctx.resume();
-    await this.recorder.start();
+    await this.recorder.start(this.ctx);
   }
 
-  /** Stop capturing, decode the take, store it in the library, and return it. */
+  /** Stop capturing, store in library, and return the AudioBuffer. */
   async stopRecording(): Promise<AudioBuffer> {
-    const blob = await this.recorder.stop();
-    const raw = await blob.arrayBuffer();
-    const buffer = await decodeAudio(this.ctx, raw);
+    const buffer = this.recorder.stop();
     this.lastRecording = buffer;
-    await this.library.add("recording", raw);
+
+    // Store as WAV in the library for persistence.
+    const wav = audioBufferToWav(buffer);
+    await this.library.add("recording", wav);
     return buffer;
   }
 

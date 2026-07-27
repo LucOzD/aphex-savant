@@ -1,45 +1,33 @@
-// Microphone recorder. Captures mic input with MediaRecorder and hands back the
-// recorded audio as a Blob, which the engine decodes into an AudioBuffer.
+// Microphone recorder. Captures mic input as raw PCM Float32 samples via a
+// MediaStreamSource + ScriptProcessor, so we never depend on MediaRecorder codec
+// support (which varies wildly across mobile browsers and causes decode failures).
 //
-// Requires a secure context (HTTPS or localhost) — getUserMedia is blocked on
-// plain HTTP.
-
-/** Pick a recording container/codec the current browser actually supports. */
-function pickMimeType(): string {
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4", // Safari / iOS
-    "audio/ogg;codecs=opus",
-  ];
-  const supported = (window as unknown as { MediaRecorder?: typeof MediaRecorder })
-    .MediaRecorder?.isTypeSupported;
-  if (!supported) return "";
-  for (const c of candidates) {
-    if (MediaRecorder.isTypeSupported(c)) return c;
-  }
-  return "";
-}
+// The resulting AudioBuffer is always valid and decodable since it IS the PCM —
+// no encode/decode round-trip.
 
 export function isRecordingSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
-    !!navigator.mediaDevices?.getUserMedia &&
-    typeof MediaRecorder !== "undefined"
+    !!navigator.mediaDevices?.getUserMedia
   );
 }
 
 export class Recorder {
-  private recorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
-  private chunks: Blob[] = [];
+  private source: MediaStreamAudioSourceNode | null = null;
+  private processor: ScriptProcessorNode | null = null;
+  private chunks: Float32Array[] = [];
+  private ctx: AudioContext | null = null;
 
   recording = false;
 
-  /** Ask for the mic and start capturing. Throws if permission is denied. */
-  async start(): Promise<void> {
+  /**
+   * Ask for the mic and start capturing raw PCM.
+   * @param ctx The app's AudioContext (needed to create the source node).
+   */
+  async start(ctx: AudioContext): Promise<void> {
     if (this.recording) return;
-    // Disable the browser's voice DSP so we sample the raw sound.
+    this.ctx = ctx;
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
@@ -48,57 +36,57 @@ export class Recorder {
       },
     });
     this.chunks = [];
-    const mimeType = pickMimeType();
-    this.recorder = new MediaRecorder(
-      this.stream,
-      mimeType ? { mimeType } : undefined,
-    );
-    this.recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) this.chunks.push(e.data);
+    this.source = ctx.createMediaStreamSource(this.stream);
+    // ScriptProcessor is deprecated but universally supported (including iOS).
+    // Buffer size 4096 is a good balance of latency vs overhead.
+    this.processor = ctx.createScriptProcessor(4096, 1, 1);
+    this.processor.onaudioprocess = (e) => {
+      if (!this.recording) return;
+      // Copy the input buffer — it gets reused by the engine.
+      const input = e.inputBuffer.getChannelData(0);
+      this.chunks.push(new Float32Array(input));
     };
-    this.recorder.start();
+    this.source.connect(this.processor);
+    this.processor.connect(ctx.destination); // must be connected to process
     this.recording = true;
   }
 
-  /** Stop capturing and resolve with the recorded audio as a Blob. */
-  stop(): Promise<Blob> {
-    return new Promise((resolve, reject) => {
-      const rec = this.recorder;
-      if (!rec || !this.recording) {
-        reject(new Error("Not recording"));
-        return;
-      }
-      rec.onstop = () => {
-        const type = this.chunks[0]?.type || rec.mimeType || "audio/webm";
-        const blob = new Blob(this.chunks, { type });
-        this.cleanup();
-        resolve(blob);
-      };
-      rec.onerror = (e) => {
-        this.cleanup();
-        reject((e as unknown as { error?: Error }).error ?? new Error("Recorder error"));
-      };
-      this.recording = false;
-      rec.stop();
-    });
+  /** Stop capturing and return the recorded audio as an AudioBuffer. */
+  stop(): AudioBuffer {
+    if (!this.recording || !this.ctx) throw new Error("Not recording");
+    this.recording = false;
+    this.cleanup();
+
+    // Combine all chunks into one contiguous Float32Array.
+    const totalLength = this.chunks.reduce((sum, c) => sum + c.length, 0);
+    const merged = new Float32Array(totalLength);
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.chunks = [];
+
+    // Create an AudioBuffer from the raw PCM.
+    const sampleRate = this.ctx.sampleRate;
+    const buffer = this.ctx.createBuffer(1, totalLength, sampleRate);
+    buffer.copyToChannel(merged, 0);
+    return buffer;
   }
 
-  /** Abort a recording without producing a result (e.g. on teardown). */
+  /** Abort a recording without producing a result. */
   cancel() {
-    if (this.recorder && this.recording) {
-      try {
-        this.recorder.stop();
-      } catch {
-        /* ignore */
-      }
-    }
+    this.recording = false;
     this.cleanup();
+    this.chunks = [];
   }
 
   private cleanup() {
+    try { this.processor?.disconnect(); } catch { /* */ }
+    try { this.source?.disconnect(); } catch { /* */ }
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    this.recorder = null;
-    this.recording = false;
+    this.source = null;
+    this.processor = null;
   }
 }
