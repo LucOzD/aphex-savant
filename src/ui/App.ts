@@ -796,9 +796,9 @@ export class App {
   }
 
   private async loadFromLibrary(entry: SampleEntry) {
-    const pad = this.selectedBank === this.engine.sampleBankIndex ? this.selectedPad : 0;
-    await this.engine.loadLibraryEntry(entry, pad);
-    this.showSampleBank(pad);
+    // Open the sample in the waveform editor for chopping, don't assign to a pad directly.
+    const buffer = await this.engine.loadLibraryEntryToBuffer(entry);
+    this.setEditorBuffer(buffer);
     this.toggleDrawer();
   }
 

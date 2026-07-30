@@ -326,6 +326,11 @@ export class AudioEngine {
     this.loadBufferOntoPad(padIndex, buffer, entry.name.replace(/\.[^.]+$/, "").slice(0, 12));
   }
 
+  /** Decode a library entry into an AudioBuffer (for the editor, without assigning to a pad). */
+  async loadLibraryEntryToBuffer(entry: SampleEntry): Promise<AudioBuffer> {
+    return decodeAudio(this.ctx, entry.data);
+  }
+
   /** List everything in the library (newest first). */
   listLibrary(): Promise<SampleEntry[]> {
     return this.library.list();
