@@ -101,6 +101,19 @@ button.ctrl.muted {
   opacity: 0.4;
   text-decoration: line-through;
 }
+.bank-menu {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  animation: fadeIn 0.15s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .pad-name-input {
   background: var(--panel-2);
   border: 1px solid var(--line);

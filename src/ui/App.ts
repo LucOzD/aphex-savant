@@ -143,41 +143,27 @@ export class App {
     this.engine.banks.forEach((b, i) => {
       const btn = el("button", { class: `ctrl${b.muted ? " muted" : ""}` }, [b.name]) as HTMLButtonElement;
       btn.addEventListener("click", () => this.selectBank(i));
+
+      // Long-press to show context menu (mute/rename/delete).
+      let holdTimer: number | null = null;
+      const startHold = (e: Event) => {
+        e.preventDefault();
+        holdTimer = window.setTimeout(() => {
+          holdTimer = null;
+          this.showBankContextMenu(i);
+        }, 500);
+      };
+      const cancelHold = () => {
+        if (holdTimer !== null) { window.clearTimeout(holdTimer); holdTimer = null; }
+      };
+      btn.addEventListener("pointerdown", startHold);
+      btn.addEventListener("pointerup", cancelHold);
+      btn.addEventListener("pointerleave", cancelHold);
+      btn.addEventListener("pointercancel", cancelHold);
+
       this.bankBtns.push(btn);
       this.bankRow.append(btn);
     });
-
-    // Controls for the selected bank.
-    const bank = this.engine.banks[this.selectedBank];
-    if (bank) {
-      const renameBtn = el("button", { class: "ctrl" }, ["✎ Rename"]) as HTMLButtonElement;
-      renameBtn.addEventListener("click", () => {
-        const name = prompt("Bank name:", bank.name);
-        if (name && name.trim()) {
-          bank.name = name.trim();
-          this.renderBankSwitcher();
-        }
-      });
-      const muteBtn = el("button", { class: `ctrl${bank.muted ? " active" : ""}` }, [
-        bank.muted ? "UNMUTE" : "MUTE",
-      ]) as HTMLButtonElement;
-      muteBtn.addEventListener("click", () => {
-        bank.muted = !bank.muted;
-        this.renderBankSwitcher();
-      });
-      const delBtn = el("button", { class: "ctrl" }, ["🗑 Delete"]) as HTMLButtonElement;
-      delBtn.addEventListener("click", () => {
-        if (!confirm(`Delete "${bank.name}"? This can't be undone.`)) return;
-        if (this.engine.deleteBank(this.selectedBank)) {
-          this.selectedBank = Math.min(this.selectedBank, this.engine.banks.length - 1);
-          this.selectedPad = 0;
-          this.renderBankSwitcher();
-          this.renderPads();
-          this.refreshSelection();
-        }
-      });
-      this.bankRow.append(renameBtn, muteBtn, delBtn);
-    }
 
     const addBtn = el("button", { class: "ctrl" }, ["+ Drum machine"]) as HTMLButtonElement;
     addBtn.addEventListener("click", () => {
@@ -195,6 +181,57 @@ export class App {
     });
     this.bankRow.append(addBtn, addSampBtn);
     this.refreshBankButtons();
+  }
+
+  /** Show an inline context menu for a bank (mute/rename/delete). */
+  private showBankContextMenu(bankIndex: number) {
+    // Remove any existing menu.
+    document.querySelector(".bank-menu")?.remove();
+
+    const bank = this.engine.banks[bankIndex];
+    if (!bank) return;
+
+    const muteBtn = el("button", { class: "ctrl" }, [bank.muted ? "Unmute" : "Mute"]) as HTMLButtonElement;
+    muteBtn.addEventListener("click", () => {
+      bank.muted = !bank.muted;
+      menu.remove();
+      this.renderBankSwitcher();
+    });
+
+    const renameBtn = el("button", { class: "ctrl" }, ["Rename"]) as HTMLButtonElement;
+    renameBtn.addEventListener("click", () => {
+      menu.remove();
+      const name = prompt("Bank name:", bank.name);
+      if (name && name.trim()) {
+        bank.name = name.trim();
+        this.renderBankSwitcher();
+      }
+    });
+
+    const delBtn = el("button", { class: "ctrl" }, ["Delete"]) as HTMLButtonElement;
+    delBtn.addEventListener("click", () => {
+      menu.remove();
+      if (!confirm(`Delete "${bank.name}"? This can't be undone.`)) return;
+      if (this.engine.deleteBank(bankIndex)) {
+        this.selectedBank = Math.min(this.selectedBank, this.engine.banks.length - 1);
+        this.selectedPad = 0;
+        this.renderBankSwitcher();
+        this.renderPads();
+        this.refreshSelection();
+      }
+    });
+
+    const closeBtn = el("button", { class: "ctrl" }, ["✕"]) as HTMLButtonElement;
+    closeBtn.addEventListener("click", () => menu.remove());
+
+    const menu = el("div", { class: "bank-menu" }, [muteBtn, renameBtn, delBtn, closeBtn]);
+    this.bankRow.append(menu);
+
+    // Auto-dismiss if user taps elsewhere.
+    const dismiss = (e: PointerEvent) => {
+      if (!menu.contains(e.target as Node)) { menu.remove(); window.removeEventListener("pointerdown", dismiss); }
+    };
+    window.setTimeout(() => window.addEventListener("pointerdown", dismiss), 10);
   }
 
   private selectBank(i: number, force = false) {
