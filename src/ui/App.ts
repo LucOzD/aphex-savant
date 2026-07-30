@@ -141,11 +141,44 @@ export class App {
     this.bankRow.innerHTML = "";
     this.bankBtns = [];
     this.engine.banks.forEach((b, i) => {
-      const btn = el("button", { class: "ctrl" }, [b.name]) as HTMLButtonElement;
+      const btn = el("button", { class: `ctrl${b.muted ? " muted" : ""}` }, [b.name]) as HTMLButtonElement;
       btn.addEventListener("click", () => this.selectBank(i));
       this.bankBtns.push(btn);
       this.bankRow.append(btn);
     });
+
+    // Controls for the selected bank.
+    const bank = this.engine.banks[this.selectedBank];
+    if (bank) {
+      const renameBtn = el("button", { class: "ctrl" }, ["✎ Rename"]) as HTMLButtonElement;
+      renameBtn.addEventListener("click", () => {
+        const name = prompt("Bank name:", bank.name);
+        if (name && name.trim()) {
+          bank.name = name.trim();
+          this.renderBankSwitcher();
+        }
+      });
+      const muteBtn = el("button", { class: `ctrl${bank.muted ? " active" : ""}` }, [
+        bank.muted ? "UNMUTE" : "MUTE",
+      ]) as HTMLButtonElement;
+      muteBtn.addEventListener("click", () => {
+        bank.muted = !bank.muted;
+        this.renderBankSwitcher();
+      });
+      const delBtn = el("button", { class: "ctrl" }, ["🗑 Delete"]) as HTMLButtonElement;
+      delBtn.addEventListener("click", () => {
+        if (!confirm(`Delete "${bank.name}"? This can't be undone.`)) return;
+        if (this.engine.deleteBank(this.selectedBank)) {
+          this.selectedBank = Math.min(this.selectedBank, this.engine.banks.length - 1);
+          this.selectedPad = 0;
+          this.renderBankSwitcher();
+          this.renderPads();
+          this.refreshSelection();
+        }
+      });
+      this.bankRow.append(renameBtn, muteBtn, delBtn);
+    }
+
     const addBtn = el("button", { class: "ctrl" }, ["+ Drum machine"]) as HTMLButtonElement;
     addBtn.addEventListener("click", () => {
       const idx = this.engine.addDrumBank();
@@ -371,9 +404,23 @@ export class App {
       this.applyTrackSetting((t) => (t.settings.filterType = filterType.value as "lowpass" | "highpass" | "bandpass"));
     });
 
+    // Pad name (editable).
+    const nameInput = el("input", {
+      type: "text",
+      value: s.name,
+      class: "pad-name-input",
+    }) as HTMLInputElement;
+    nameInput.addEventListener("change", () => {
+      const val = nameInput.value.trim() || "pad";
+      track.settings.name = val;
+      // Update the pad label too.
+      const padSpan = this.padEls[this.selectedPad]?.querySelector("span");
+      if (padSpan) padSpan.textContent = val;
+    });
+
     this.trackPanel.append(
       el("div", { class: "row", style: "justify-content:space-between" }, [
-        el("span", { class: "hint" }, [`${s.name} — ${this.bank().name} bank`]),
+        el("label", { class: "field" }, [el("span", {}, ["PAD NAME"]), nameInput]),
         allBtn,
       ]),
       el("div", { class: "row" }, [

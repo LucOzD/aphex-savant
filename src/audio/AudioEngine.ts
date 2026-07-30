@@ -25,6 +25,7 @@ export interface Bank {
   name: string;
   kind: BankKind;
   tracks: Track[];
+  muted: boolean;
 }
 
 const DEFAULT_CONFIG: EngineConfig = {
@@ -93,7 +94,7 @@ export class AudioEngine {
 
   /** Construct a bank of pads/tracks from a config (used at init + when adding). */
   private buildBank(bankCfg: BankConfig): Bank {
-    const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [] };
+    const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [], muted: false };
     const kit = bankCfg.kind === "synth" ? generateDrumKit(this.ctx, bankCfg.pads) : null;
     for (let i = 0; i < bankCfg.pads; i++) {
       const track = new Track(this.ctx, this.master, this.config.steps, {
@@ -121,6 +122,14 @@ export class AudioEngine {
     const count = this.banks.filter((b) => b.kind === "sample").length + 1;
     this.banks.push(this.buildBank({ name: `SAMPLES ${count}`, pads, kind: "sample" }));
     return this.banks.length - 1;
+  }
+
+  /** Delete a bank by index. Returns true if deleted. Won't delete the last bank. */
+  deleteBank(index: number): boolean {
+    if (this.banks.length <= 1) return false;
+    if (index < 0 || index >= this.banks.length) return false;
+    this.banks.splice(index, 1);
+    return true;
   }
 
   get isReady(): boolean {
@@ -190,15 +199,17 @@ export class AudioEngine {
   }
 
   private handleStep(absStep: number, time: number) {
-    for (const track of this.allTracks) {
-      const len = track.length;
-      const local = ((absStep % len) + len) % len;
-      const s = track.steps[local];
-      if (!s || !s.on) continue;
-      if (s.probability < 1 && Math.random() > s.probability) continue;
-      track.trigger(time, s.pitch, s.velocity);
+    for (const bank of this.banks) {
+      if (bank.muted) continue;
+      for (const track of bank.tracks) {
+        const len = track.length;
+        const local = ((absStep % len) + len) % len;
+        const s = track.steps[local];
+        if (!s || !s.on) continue;
+        if (s.probability < 1 && Math.random() > s.probability) continue;
+        track.trigger(time, s.pitch, s.velocity);
+      }
     }
-    // Schedule the UI highlight to line up with the audio.
     const delayMs = Math.max(0, (time - this.ctx.currentTime) * 1000);
     window.setTimeout(() => this.onVisualStep(absStep), delayMs);
   }
@@ -417,7 +428,7 @@ export class AudioEngine {
     // Clear existing banks and rebuild from the project data.
     this.banks.length = 0;
     for (const bankData of project.banks) {
-      const bank: Bank = { name: bankData.name, kind: bankData.kind, tracks: [] };
+      const bank: Bank = { name: bankData.name, kind: bankData.kind, tracks: [], muted: bankData.muted ?? false };
       for (const td of bankData.tracks) {
         const track = new Track(this.ctx, this.master, td.length, td.settings);
         track.steps = td.steps;

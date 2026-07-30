@@ -97,6 +97,20 @@ button.ctrl.active {
   border-color: var(--accent);
   color: #fff;
 }
+button.ctrl.muted {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.pad-name-input {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  width: 120px;
+}
 button.play {
   min-width: 64px;
 }
