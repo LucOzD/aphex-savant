@@ -368,3 +368,12 @@ button.perf.held {
   white-space: nowrap;
   max-width: 180px;
 }
+.drawer-del {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  margin-left: auto;
+  background: var(--bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}

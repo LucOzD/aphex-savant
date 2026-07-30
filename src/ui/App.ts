@@ -778,9 +778,17 @@ export class App {
       return;
     }
     for (const entry of entries) {
+      const delBtn = el("button", { class: "ctrl drawer-del" }, ["✕"]) as HTMLButtonElement;
+      delBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (entry.id == null) return;
+        await this.engine.library.remove(entry.id);
+        this.refreshDrawer();
+      });
       const item = el("button", { class: "drawer-item" }, [
         el("span", { class: "drawer-name" }, [entry.name]),
         el("span", { class: "hint" }, [new Date(entry.addedAt).toLocaleDateString()]),
+        delBtn,
       ]) as HTMLButtonElement;
       item.addEventListener("click", () => this.loadFromLibrary(entry));
       this.drawerList.append(item);
