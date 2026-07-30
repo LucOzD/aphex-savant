@@ -115,6 +115,14 @@ export class AudioEngine {
     return this.banks.length - 1;
   }
 
+  /** Add a fresh sample bank. Returns its bank index. */
+  addSampleBank(pads = 16): number {
+    if (!this.started) return -1;
+    const count = this.banks.filter((b) => b.kind === "sample").length + 1;
+    this.banks.push(this.buildBank({ name: `SAMPLES ${count}`, pads, kind: "sample" }));
+    return this.banks.length - 1;
+  }
+
   get isReady(): boolean {
     return this.started;
   }
@@ -322,4 +330,117 @@ export class AudioEngine {
   listLibrary(): Promise<SampleEntry[]> {
     return this.library.list();
   }
+
+  // ---- Export / project save-load -----------------------------------------
+
+  /**
+   * Offline-render the current sequence as a WAV file. Plays for `bars`
+   * repetitions of the longest track length. Returns a Blob you can download.
+   */
+  async exportWav(bars = 4): Promise<Blob> {
+    // Find longest loop across all tracks to know one "cycle".
+    const maxLen = Math.max(...this.allTracks.map((t) => t.length));
+    const totalSteps = maxLen * bars;
+    const stepDur = 60 / this.scheduler.bpm / 4;
+    const totalSeconds = totalSteps * stepDur + 2; // extra tail for reverb
+
+    const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * this.ctx.sampleRate), this.ctx.sampleRate);
+
+    // Build a temporary master chain in the offline context.
+    const offMaster = new MasterChain(offline as unknown as AudioContext, null);
+
+    // Build temporary tracks mirroring the current state.
+    for (const bank of this.banks) {
+      for (const srcTrack of bank.tracks) {
+        if (!srcTrack.buffer) continue;
+        const t = new Track(offline as unknown as AudioContext, offMaster, srcTrack.length, srcTrack.settings);
+        t.setBuffer(srcTrack.buffer, srcTrack.region);
+        t.steps = srcTrack.steps;
+        t.setLength(srcTrack.length);
+        // Schedule every step.
+        for (let step = 0; step < totalSteps; step++) {
+          const local = step % t.length;
+          const s = t.steps[local];
+          if (!s || !s.on) continue;
+          if (s.probability < 1 && Math.random() > s.probability) continue;
+          const when = step * stepDur + 0.01;
+          t.trigger(when, s.pitch, s.velocity);
+        }
+      }
+    }
+
+    const rendered = await offline.startRendering();
+    const wav = audioBufferToWav(rendered);
+    return new Blob([wav], { type: "audio/wav" });
+  }
+
+  /**
+   * Serialize the current project (patterns + track settings + sample data)
+   * to a JSON blob that can be saved and re-opened.
+   */
+  async exportProject(): Promise<Blob> {
+    const project: Record<string, unknown> = {
+      version: 1,
+      bpm: this.bpm,
+      swing: this.swing,
+      banks: this.banks.map((bank) => ({
+        name: bank.name,
+        kind: bank.kind,
+        tracks: bank.tracks.map((t) => ({
+          settings: t.settings,
+          steps: t.steps.slice(0, t.length),
+          length: t.length,
+          // Encode sample data as base64 WAV if present.
+          sampleData: t.buffer ? arrayBufferToBase64(audioBufferToWav(t.buffer)) : null,
+          region: t.region,
+        })),
+      })),
+    };
+    const json = JSON.stringify(project);
+    return new Blob([json], { type: "application/json" });
+  }
+
+  /** Load a project file exported by exportProject. */
+  async importProject(file: File): Promise<void> {
+    const text = await file.text();
+    const project = JSON.parse(text);
+    if (project.version !== 1) throw new Error("Unsupported project version");
+
+    this.bpm = project.bpm ?? 120;
+    this.swing = project.swing ?? 0;
+
+    // Clear existing banks and rebuild from the project data.
+    this.banks.length = 0;
+    for (const bankData of project.banks) {
+      const bank: Bank = { name: bankData.name, kind: bankData.kind, tracks: [] };
+      for (const td of bankData.tracks) {
+        const track = new Track(this.ctx, this.master, td.length, td.settings);
+        track.steps = td.steps;
+        track.setLength(td.length);
+        if (td.sampleData) {
+          const wav = base64ToArrayBuffer(td.sampleData);
+          const buffer = await decodeAudio(this.ctx, wav);
+          track.setBuffer(buffer, td.region ?? null);
+        }
+        bank.tracks.push(track);
+      }
+      this.banks.push(bank);
+    }
+  }
+}
+
+// ---- Helpers ----------------------------------------------------------------
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
 }

@@ -63,6 +63,7 @@ export class App {
       this.buildPerformance(),
       this.buildSampleTools(),
       this.buildSampleEditor(),
+      this.buildExportSection(),
     );
     this.root.append(main);
     this.root.append(this.buildDrawer());
@@ -152,7 +153,14 @@ export class App {
       this.renderBankSwitcher();
       this.selectBank(idx, true);
     });
-    this.bankRow.append(addBtn);
+    const addSampBtn = el("button", { class: "ctrl" }, ["+ Sample bank"]) as HTMLButtonElement;
+    addSampBtn.addEventListener("click", () => {
+      const idx = this.engine.addSampleBank();
+      if (idx < 0) return;
+      this.renderBankSwitcher();
+      this.selectBank(idx, true);
+    });
+    this.bankRow.append(addBtn, addSampBtn);
     this.refreshBankButtons();
   }
 
@@ -551,7 +559,9 @@ export class App {
       this.buildRecorder(),
       el("div", { class: "row" }, [chopBtn, padBtn, chopInput, padInput]),
       el("p", { class: "hint" }, [
-        "Recordings and loaded files go to the SAMPLES bank — your drum kit is left untouched. Chop uses transient detection to auto-slice across the sample pads.",
+        "Recordings and loaded files go to the SAMPLES bank — your drum kit is left untouched. " +
+        "Chop uses transient detection to auto-slice across the sample pads. " +
+        "Use the sample editor below to open any file and manually select regions.",
       ]),
     ]);
   }
@@ -686,6 +696,61 @@ export class App {
       el("div", { class: "row" }, [recBtn, status]),
       el("div", { class: "row" }, [chopRecBtn, padRecBtn]),
     ]);
+  }
+
+  // ---- Export / project save-load ------------------------------------------
+
+  private buildExportSection(): HTMLElement {
+    const exportBtn = el("button", { class: "ctrl" }, ["Export WAV"]) as HTMLButtonElement;
+    exportBtn.addEventListener("click", async () => {
+      exportBtn.disabled = true;
+      exportBtn.textContent = "rendering…";
+      try {
+        const blob = await this.engine.exportWav();
+        this.downloadBlob(blob, "pocket-sampler-export.wav");
+      } catch (err) { console.error(err); alert("Export failed"); }
+      exportBtn.disabled = false;
+      exportBtn.textContent = "Export WAV";
+    });
+
+    const saveBtn = el("button", { class: "ctrl" }, ["Save project"]) as HTMLButtonElement;
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      try {
+        const blob = await this.engine.exportProject();
+        this.downloadBlob(blob, "pocket-sampler-project.json");
+      } catch (err) { console.error(err); alert("Save failed"); }
+      saveBtn.disabled = false;
+    });
+
+    const loadInput = el("input", { type: "file", accept: ".json", style: "display:none" }) as HTMLInputElement;
+    loadInput.addEventListener("change", async () => {
+      const file = loadInput.files?.[0]; if (!file) return;
+      try {
+        await this.engine.importProject(file);
+        this.renderBankSwitcher();
+        this.selectBank(0, true);
+      } catch (err) { console.error(err); alert("Failed to open project"); }
+    });
+    const loadBtn = el("button", { class: "ctrl" }, ["Open project"]) as HTMLButtonElement;
+    loadBtn.addEventListener("click", () => loadInput.click());
+
+    return el("section", {}, [
+      el("h2", { class: "section-title" }, ["Export & projects"]),
+      el("div", { class: "row" }, [exportBtn, saveBtn, loadBtn, loadInput]),
+      el("p", { class: "hint" }, [
+        "Export WAV renders the sequence as audio. Save/open project preserves patterns, settings, and samples so you can come back later.",
+      ]),
+    ]);
+  }
+
+  private downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // ---- Library drawer (slides in from the right) --------------------------
