@@ -100,6 +100,7 @@ export class Track {
     if (!this.buffer) return;
     const s = this.settings;
 
+    if (s.mono) this.chokeActive(when);
     if (s.chokeGroup !== 0) this.chokeActive(when);
 
     const src = this.ctx.createBufferSource();

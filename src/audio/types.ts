@@ -36,6 +36,8 @@ export interface TrackSettings {
   release: number;
   /** Choke group id; tracks sharing a group cut each other off (0 = none). */
   chokeGroup: number;
+  /** When true, retriggering this pad cuts off the previous sound (self-choke). */
+  mono: boolean;
 }
 
 export function defaultTrackSettings(name: string): TrackSettings {
@@ -52,6 +54,7 @@ export function defaultTrackSettings(name: string): TrackSettings {
     attack: 0.001,
     release: 0.25,
     chokeGroup: 0,
+    mono: false,
   };
 }
 

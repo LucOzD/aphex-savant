@@ -377,6 +377,7 @@ export class App {
         allBtn,
       ]),
       el("div", { class: "row" }, [
+        this.buildMonoToggle(track),
         slider({ label: "VOLUME", min: 0, max: 1, step: 0.01, value: s.gain,
           format: (v) => `${Math.round(v * 100)}`,
           onInput: (v) => this.applyTrackSetting((t) => (t.settings.gain = v)),
@@ -429,6 +430,16 @@ export class App {
     if (!current) return;
     const targets = this.applyAllPads ? this.bank().tracks : [current];
     targets.forEach((t) => { fn(t); t.applySettings(); });
+  }
+
+  private buildMonoToggle(track: Track): HTMLElement {
+    const btn = el("button", { class: "ctrl" }, ["MONO"]) as HTMLButtonElement;
+    btn.classList.toggle("active", track.settings.mono);
+    btn.addEventListener("click", () => {
+      this.applyTrackSetting((t) => (t.settings.mono = !t.settings.mono));
+      btn.classList.toggle("active", track.settings.mono);
+    });
+    return btn;
   }
 
   // ---- Master FX ----------------------------------------------------------
