@@ -1,4 +1,4 @@
-import type { AudioEngine } from "../audio/AudioEngine.ts";
+import type { AudioEngine, EngineSnapshot } from "../audio/AudioEngine.ts";
 import type { Track } from "../audio/Track.ts";
 import type { Step } from "../audio/types.ts";
 import type { SampleEntry } from "../audio/SampleLibrary.ts";
@@ -37,6 +37,19 @@ export class App {
   private editorBuffer: AudioBuffer | null = null;
   private editorReadout!: HTMLElement;
   private editorTarget!: HTMLSelectElement;
+
+  // Per-scene FX panel.
+  private masterPanel!: HTMLElement;
+  private masterTitle!: HTMLElement;
+
+  // Undo/redo: a list of state snapshots with a pointer into it.
+  private history: EngineSnapshot[] = [];
+  private historyIndex = -1;
+  private readonly historyLimit = 60;
+  private undoBtn!: HTMLButtonElement;
+  private redoBtn!: HTMLButtonElement;
+  /** Guards against recording new history while we're applying a restore. */
+  private restoring = false;
 
   // Library drawer.
   private drawer!: HTMLElement;
@@ -88,6 +101,37 @@ export class App {
     this.renderPads();
     this.refreshSelection();
     requestAnimationFrame(() => this.editor.redraw());
+
+    // Seed history with the starting state so the first undo has a target.
+    this.commit();
+    this.installUndoShortcuts();
+    this.installSliderCommitTracking();
+  }
+
+  /** Ctrl/Cmd+Z to undo, Ctrl/Cmd+Shift+Z (or Ctrl+Y) to redo. */
+  private installUndoShortcuts() {
+    window.addEventListener("keydown", (e) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) { e.preventDefault(); this.undo(); }
+      else if ((key === "z" && e.shiftKey) || key === "y") { e.preventDefault(); this.redo(); }
+    });
+  }
+
+  /**
+   * Sliders fire a stream of `input` events while dragging, which would flood
+   * history. Commit once on `change` instead (fires on release), so a whole
+   * drag collapses into a single undo step.
+   */
+  private installSliderCommitTracking() {
+    this.root.addEventListener("change", (e) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const isRange = target instanceof HTMLInputElement && target.type === "range";
+      const isSelect = target instanceof HTMLSelectElement;
+      if (isRange || isSelect) this.commit();
+    });
   }
 
   // ---- Convenience --------------------------------------------------------
@@ -124,9 +168,15 @@ export class App {
       format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => (this.engine.swing = v),
     });
 
+    this.undoBtn = el("button", { class: "ctrl", title: "Undo" }, ["↶"]) as HTMLButtonElement;
+    this.undoBtn.addEventListener("click", () => this.undo());
+    this.redoBtn = el("button", { class: "ctrl", title: "Redo" }, ["↷"]) as HTMLButtonElement;
+    this.redoBtn.addEventListener("click", () => this.redo());
+
     return el("div", { class: "topbar" }, [
       el("span", { class: "title" }, ["POCKET SAMPLER"]),
       playBtn, tempo, swing,
+      this.undoBtn, this.redoBtn,
       this.buildLibraryToggle(),
     ]);
   }
@@ -189,6 +239,7 @@ export class App {
       if (idx < 0) return;
       this.renderBankSwitcher();
       this.selectBank(idx, true);
+      this.commit();
     });
     const addSampBtn = el("button", { class: "ctrl" }, ["+ Sample bank"]) as HTMLButtonElement;
     addSampBtn.addEventListener("click", () => {
@@ -196,6 +247,7 @@ export class App {
       if (idx < 0) return;
       this.renderBankSwitcher();
       this.selectBank(idx, true);
+      this.commit();
     });
     this.bankRow.append(addBtn, addSampBtn);
     this.refreshBankButtons();
@@ -214,6 +266,7 @@ export class App {
       bank.muted = !bank.muted;
       menu.remove();
       this.renderBankSwitcher();
+      this.commit();
     });
 
     const renameBtn = el("button", { class: "ctrl" }, ["Rename"]) as HTMLButtonElement;
@@ -223,6 +276,8 @@ export class App {
       if (name && name.trim()) {
         bank.name = name.trim();
         this.renderBankSwitcher();
+        this.refreshMasterPanel();
+        this.commit();
       }
     });
 
@@ -236,6 +291,7 @@ export class App {
         this.renderBankSwitcher();
         this.renderPads();
         this.refreshSelection();
+        this.commit();
       }
     });
 
@@ -367,6 +423,7 @@ export class App {
       this.refreshStepPanel();
     } else {
       track.steps[i].on = !track.steps[i].on;
+      this.commit();
     }
     this.refreshSteps();
   }
@@ -471,6 +528,8 @@ export class App {
       // Update the pad label too.
       const padSpan = this.padEls[this.selectedPad]?.querySelector("span");
       if (padSpan) padSpan.textContent = val;
+      this.refreshEditorTargets();
+      this.commit();
     });
 
     this.trackPanel.append(
@@ -540,6 +599,7 @@ export class App {
     btn.addEventListener("click", () => {
       this.applyTrackSetting((t) => (t.settings.mono = !t.settings.mono));
       btn.classList.toggle("active", track.settings.mono);
+      this.commit();
     });
     return btn;
   }
@@ -547,88 +607,104 @@ export class App {
   // ---- Master FX ----------------------------------------------------------
 
   private buildMasterPanel(): HTMLElement {
-    const panel = el("div", { class: "panel" });
-    const m = () => this.engine.master;
-    let bits = 16, reduction = 1, crushMix = 1;
-    const pushCrush = () => m().setCrush(bits, reduction, crushMix);
+    this.masterPanel = el("div", { class: "panel" });
+    this.masterTitle = el("h2", { class: "section-title" }, ["Scene FX"]);
+    const section = el("section", {}, [this.masterTitle, this.masterPanel]);
+    this.refreshMasterPanel();
+    return section;
+  }
 
-    // Filter type selector.
+  /**
+   * Rebuild the FX panel for the selected bank. Each bank owns its own chain,
+   * so switching banks shows (and edits) that scene's values.
+   */
+  private refreshMasterPanel() {
+    const chain = this.engine.chainFor(this.selectedBank);
+    this.masterPanel.innerHTML = "";
+    if (!chain) return;
+    const fx = chain.settings;
+    const apply = () => chain.applySettings();
+
+    this.masterTitle.textContent = `Scene FX — ${this.bank().name} only`;
+
     const filterType = el("select", { class: "ctrl" }) as HTMLSelectElement;
     for (const t of ["lowpass", "highpass", "bandpass"]) {
-      filterType.append(el("option", { value: t }, [t.toUpperCase()]));
+      const opt = el("option", { value: t }, [t.toUpperCase()]);
+      if (t === fx.filterType) opt.setAttribute("selected", "");
+      filterType.append(opt);
     }
-    filterType.addEventListener("change", () => m().setFilterType(filterType.value as BiquadFilterType));
+    filterType.addEventListener("change", () => {
+      fx.filterType = filterType.value as BiquadFilterType;
+      apply();
+    });
 
-    panel.append(
+    this.masterPanel.append(
       el("div", { class: "row" }, [
-        slider({ label: "CRUSH BITS", min: 1, max: 16, step: 1, value: bits,
-          onInput: (v) => { bits = v; pushCrush(); },
+        slider({ label: "CRUSH BITS", min: 1, max: 16, step: 1, value: fx.crushBits,
+          onInput: (v) => { fx.crushBits = v; apply(); },
         }),
-        slider({ label: "SR REDUCE", min: 1, max: 40, step: 1, value: reduction,
-          format: (v) => `${v}x`, onInput: (v) => { reduction = v; pushCrush(); },
+        slider({ label: "SR REDUCE", min: 1, max: 40, step: 1, value: fx.crushReduction,
+          format: (v) => `${v}x`, onInput: (v) => { fx.crushReduction = v; apply(); },
         }),
-        slider({ label: "CRUSH MIX", min: 0, max: 1, step: 0.01, value: crushMix,
+        slider({ label: "CRUSH MIX", min: 0, max: 1, step: 0.01, value: fx.crushMix,
           format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => { crushMix = v; pushCrush(); },
+          onInput: (v) => { fx.crushMix = v; apply(); },
         }),
       ]),
       el("div", { class: "row" }, [
         el("label", { class: "field" }, [el("span", {}, ["FILTER TYPE"]), filterType]),
-        slider({ label: "FILTER FREQ", min: 200, max: 20000, step: 10, value: 20000,
-          format: (v) => `${Math.round(v)}Hz`, onInput: (v) => m().setFilter(v),
+        slider({ label: "FILTER FREQ", min: 200, max: 20000, step: 10, value: fx.filterFreq,
+          format: (v) => `${Math.round(v)}Hz`, onInput: (v) => { fx.filterFreq = v; apply(); },
         }),
-        slider({ label: "FILTER Q", min: 0.1, max: 20, step: 0.1, value: 0.7,
-          format: (v) => v.toFixed(1), onInput: (v) => m().setFilter(20000, v),
+        slider({ label: "FILTER Q", min: 0.1, max: 20, step: 0.1, value: fx.filterQ,
+          format: (v) => v.toFixed(1), onInput: (v) => { fx.filterQ = v; apply(); },
         }),
-        slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: 0,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDrive(v),
-        }),
-      ]),
-      el("div", { class: "row" }, [
-        slider({ label: "DELAY FBK", min: 0, max: 0.95, step: 0.01, value: 0.35,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setDelayFeedback(v),
-        }),
-        slider({ label: "PHASER MIX", min: 0, max: 1, step: 0.01, value: 0,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setPhaserMix(v),
-        }),
-        slider({ label: "PHASER RATE", min: 0.05, max: 8, step: 0.05, value: 0.4,
-          format: (v) => `${v.toFixed(2)} Hz`, onInput: (v) => m().setPhaserRate(v),
-        }),
-        slider({ label: "PHASER DEPTH", min: 100, max: 3000, step: 10, value: 800,
-          format: (v) => `${Math.round(v)}`, onInput: (v) => m().setPhaserDepth(v),
+        slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: fx.drive,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.drive = v; apply(); },
         }),
       ]),
       el("div", { class: "row" }, [
-        slider({ label: "CHORUS MIX", min: 0, max: 1, step: 0.01, value: 0,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => m().setChorusMix(v),
+        slider({ label: "DELAY FBK", min: 0, max: 0.95, step: 0.01, value: fx.delayFeedback,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.delayFeedback = v; apply(); },
         }),
-        slider({ label: "CHORUS RATE", min: 0.1, max: 6, step: 0.1, value: 1.5,
-          format: (v) => `${v.toFixed(1)} Hz`, onInput: (v) => m().setChorusRate(v),
+        slider({ label: "PHASER MIX", min: 0, max: 1, step: 0.01, value: fx.phaserMix,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.phaserMix = v; apply(); },
         }),
-        slider({ label: "CHORUS DEPTH", min: 0.001, max: 0.015, step: 0.001, value: 0.004,
-          format: (v) => `${(v * 1000).toFixed(1)} ms`, onInput: (v) => m().setChorusDepth(v),
+        slider({ label: "PHASER RATE", min: 0.05, max: 8, step: 0.05, value: fx.phaserRate,
+          format: (v) => `${v.toFixed(2)} Hz`, onInput: (v) => { fx.phaserRate = v; apply(); },
+        }),
+        slider({ label: "PHASER DEPTH", min: 100, max: 3000, step: 10, value: fx.phaserDepth,
+          format: (v) => `${Math.round(v)}`, onInput: (v) => { fx.phaserDepth = v; apply(); },
+        }),
+      ]),
+      el("div", { class: "row" }, [
+        slider({ label: "CHORUS MIX", min: 0, max: 1, step: 0.01, value: fx.chorusMix,
+          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.chorusMix = v; apply(); },
+        }),
+        slider({ label: "CHORUS RATE", min: 0.1, max: 6, step: 0.1, value: fx.chorusRate,
+          format: (v) => `${v.toFixed(1)} Hz`, onInput: (v) => { fx.chorusRate = v; apply(); },
+        }),
+        slider({ label: "CHORUS DEPTH", min: 0.001, max: 0.015, step: 0.001, value: fx.chorusDepth,
+          format: (v) => `${(v * 1000).toFixed(1)} ms`, onInput: (v) => { fx.chorusDepth = v; apply(); },
         }),
       ]),
     );
-    return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Master FX (universal)"]),
-      panel,
-    ]);
   }
 
   // ---- Momentary performance FX ------------------------------------------
 
   private buildPerformance(): HTMLElement {
+    // These slam the selected scene's chain, then fall back to its settings.
     const filterBtn = this.makePerfButton("FILTER", {
-      on: () => this.engine.master.setFilter(400, 6),
-      off: () => this.engine.master.setFilter(20000, 0.7),
+      on: () => this.engine.chainFor(this.selectedBank)?.setFilterOverride(400, 6),
+      off: () => this.engine.chainFor(this.selectedBank)?.clearOverrides(),
     });
     const crushBtn = this.makePerfButton("CRUSH", {
-      on: () => this.engine.master.setCrush(4, 12, 1),
-      off: () => this.engine.master.setCrush(16, 1, 1),
+      on: () => this.engine.chainFor(this.selectedBank)?.setCrushOverride(4, 12, 1),
+      off: () => this.engine.chainFor(this.selectedBank)?.clearOverrides(),
     });
     return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Performance — hold to apply"]),
+      el("h2", { class: "section-title" }, ["Performance — hold to apply to this scene"]),
       el("div", { class: "row" }, [filterBtn, crushBtn]),
     ]);
   }
@@ -650,21 +726,21 @@ export class App {
     const chopInput = el("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
     chopInput.addEventListener("change", async () => {
       const file = chopInput.files?.[0]; if (!file) return;
-      const n = await this.engine.loadAndSlice(file);
-      this.showSampleBank();
-      alert(`Chopped into ${n} slices across the SAMPLES bank.`);
+      const bank = this.selectedBank;
+      const n = await this.engine.loadAndSlice(file, bank);
+      this.afterPadsChanged();
+      alert(`Chopped into ${n} slices across ${this.engine.banks[bank]?.name}.`);
     });
-    const chopBtn = el("button", { class: "ctrl" }, ["Chop file → samples"]);
+    const chopBtn = el("button", { class: "ctrl" }, ["Chop file → this scene"]);
     chopBtn.addEventListener("click", () => chopInput.click());
 
     const padInput = el("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
     padInput.addEventListener("change", async () => {
       const file = padInput.files?.[0]; if (!file) return;
-      const pad = this.sampleTargetPad();
-      await this.engine.loadOntoPad(pad, file);
-      this.showSampleBank(pad);
+      await this.engine.loadOntoPad(this.selectedBank, this.selectedPad, file);
+      this.afterPadsChanged();
     });
-    const padBtn = el("button", { class: "ctrl" }, ["Load file → sample pad"]);
+    const padBtn = el("button", { class: "ctrl" }, ["Load file → selected pad"]);
     padBtn.addEventListener("click", () => padInput.click());
 
     return el("section", {}, [
@@ -672,23 +748,18 @@ export class App {
       this.buildRecorder(),
       el("div", { class: "row" }, [chopBtn, padBtn, chopInput, padInput]),
       el("p", { class: "hint" }, [
-        "Recordings and loaded files go to the SAMPLES bank — your drum kit is left untouched. " +
-        "Chop uses transient detection to auto-slice across the sample pads. " +
+        "Samples load into the scene you're currently viewing, on the selected pad. " +
+        "Chop uses transient detection to auto-slice across that scene's pads. " +
         "Use the sample editor below to open any file and manually select regions.",
       ]),
     ]);
   }
 
-  private sampleTargetPad(): number {
-    return this.selectedBank === this.engine.sampleBankIndex ? this.selectedPad : 0;
-  }
-
-  private showSampleBank(pad = 0) {
-    this.selectedBank = this.engine.sampleBankIndex;
-    this.selectedPad = pad;
+  /** Re-render after pads gain or lose samples, and record an undo point. */
+  private afterPadsChanged() {
     this.renderPads();
     this.refreshSelection();
-    this.refreshBankButtons();
+    this.commit();
   }
 
   // ---- Sample editor (waveform + slice markers) ---------------------------
@@ -718,19 +789,19 @@ export class App {
       this.engine.previewRegion(this.editorBuffer, s, e);
     });
 
+    // Pad picker for the assign target, within the current scene.
     this.editorTarget = el("select", { class: "ctrl" }) as HTMLSelectElement;
-    const sampleTracks = this.engine.banks[this.engine.sampleBankIndex].tracks;
-    sampleTracks.forEach((_, i) => {
-      this.editorTarget.append(el("option", { value: String(i) }, [`pad ${i + 1}`]));
-    });
+    this.refreshEditorTargets();
 
     const assignBtn = el("button", { class: "ctrl active" }, ["Assign to pad"]);
     assignBtn.addEventListener("click", () => {
       if (!this.editorBuffer) return;
       const pad = Number(this.editorTarget.value);
       const [s, e] = this.editor.getRegion();
-      this.engine.assignRegionToPad(pad, this.editorBuffer, s, e, `slice ${pad + 1}`);
-      this.showSampleBank(pad);
+      // Assigns into the scene currently being viewed.
+      this.engine.assignRegionToPad(this.selectedBank, pad, this.editorBuffer, s, e, `slice ${pad + 1}`);
+      this.selectedPad = pad;
+      this.afterPadsChanged();
       this.engine.previewRegion(this.editorBuffer, s, e);
     });
 
@@ -741,6 +812,20 @@ export class App {
       el("div", { class: "row" }, [openBtn, useRecBtn, previewBtn, fileInput]),
       el("div", { class: "row" }, [el("span", { class: "hint" }, ["→ target"]), this.editorTarget, assignBtn]),
     ]);
+  }
+
+  /** Rebuild the assign-target pad list for the current scene. */
+  private refreshEditorTargets() {
+    if (!this.editorTarget) return;
+    const prev = this.editorTarget.value;
+    this.editorTarget.innerHTML = "";
+    const tracks = this.bank()?.tracks ?? [];
+    tracks.forEach((t, i) => {
+      this.editorTarget.append(
+        el("option", { value: String(i) }, [`${i + 1}: ${t.settings.name}`]),
+      );
+    });
+    if (prev && Number(prev) < tracks.length) this.editorTarget.value = prev;
   }
 
   private setEditorBuffer(buffer: AudioBuffer) {
@@ -794,16 +879,17 @@ export class App {
 
     chopRecBtn.addEventListener("click", () => {
       if (!this.engine.lastRecording) return;
-      const n = this.engine.sliceBufferAcrossPads(this.engine.lastRecording);
-      this.showSampleBank();
+      const n = this.engine.sliceBufferAcrossPads(this.engine.lastRecording, this.selectedBank);
+      this.afterPadsChanged();
       status.textContent = `chopped into ${n} slices`;
     });
     padRecBtn.addEventListener("click", () => {
       if (!this.engine.lastRecording) return;
-      const pad = this.sampleTargetPad();
-      this.engine.loadBufferOntoPad(pad, this.engine.lastRecording, "recording");
-      this.showSampleBank(pad);
-      status.textContent = "loaded onto sample pad";
+      this.engine.loadBufferOntoPad(
+        this.selectedBank, this.selectedPad, this.engine.lastRecording, "recording",
+      );
+      this.afterPadsChanged();
+      status.textContent = `loaded onto ${this.track()?.settings.name}`;
     });
     return el("div", { class: "panel" }, [
       el("div", { class: "row" }, [recBtn, status]),
@@ -841,8 +927,15 @@ export class App {
       const file = loadInput.files?.[0]; if (!file) return;
       try {
         await this.engine.importProject(file);
+        this.selectedBank = 0;
+        this.selectedPad = 0;
         this.renderBankSwitcher();
-        this.selectBank(0, true);
+        this.renderPads();
+        this.refreshSelection();
+        // Opening a project resets history to that state.
+        this.history.length = 0;
+        this.historyIndex = -1;
+        this.commit();
       } catch (err) { console.error(err); alert("Failed to open project"); }
     });
     const loadBtn = el("button", { class: "ctrl" }, ["Open project"]) as HTMLButtonElement;
@@ -864,6 +957,57 @@ export class App {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  // ---- Undo / redo ---------------------------------------------------------
+
+  /**
+   * Record the current state as a new undo point. Called after a change lands,
+   * so the history is a list of states and undo just steps back through it.
+   */
+  private commit() {
+    if (this.restoring) return;
+    // Drop any redo entries ahead of the pointer.
+    this.history.length = this.historyIndex + 1;
+    this.history.push(this.engine.snapshot());
+    if (this.history.length > this.historyLimit) this.history.shift();
+    this.historyIndex = this.history.length - 1;
+    this.refreshUndoButtons();
+  }
+
+  private undo() {
+    if (this.historyIndex <= 0) return;
+    this.historyIndex--;
+    this.applySnapshot(this.history[this.historyIndex]);
+  }
+
+  private redo() {
+    if (this.historyIndex >= this.history.length - 1) return;
+    this.historyIndex++;
+    this.applySnapshot(this.history[this.historyIndex]);
+  }
+
+  private applySnapshot(snap: EngineSnapshot) {
+    this.restoring = true;
+    try {
+      this.engine.restore(snap);
+      // Selection may point at a bank/pad that no longer exists.
+      this.selectedBank = Math.min(this.selectedBank, this.engine.banks.length - 1);
+      const padCount = this.bank()?.tracks.length ?? 0;
+      this.selectedPad = Math.min(this.selectedPad, Math.max(0, padCount - 1));
+      this.renderBankSwitcher();
+      this.renderPads();
+      this.refreshSelection();
+    } finally {
+      this.restoring = false;
+    }
+    this.refreshUndoButtons();
+  }
+
+  private refreshUndoButtons() {
+    if (!this.undoBtn) return;
+    this.undoBtn.disabled = this.historyIndex <= 0;
+    this.redoBtn.disabled = this.historyIndex >= this.history.length - 1;
   }
 
   // ---- Library drawer (slides in from the right) --------------------------
@@ -928,6 +1072,9 @@ export class App {
     this.renderStepGrid();
     this.refreshStepPanel();
     this.refreshTrackPanel();
+    // FX are per scene, so this follows the selected bank.
+    if (this.masterPanel) this.refreshMasterPanel();
+    this.refreshEditorTargets();
   }
 
   private refreshSteps() {

@@ -17,58 +17,59 @@ us start audio (especially on iOS).
 
 ## What works today
 
-- **Audio engine** — Web Audio graph with a proper master chain and shared FX
-  sends (see routing below).
-- **Two banks** you switch between: a **DRUMS** bank (built-in synth kit, makes
-  noise immediately) and a separate **SAMPLES** bank that recordings and loaded
-  files go into — so importing audio never overwrites your drum kit. Both banks
-  play and sequence together.
-- **16 pads** per bank in a 4×4 grid, each a track with its own sound.
-- **Tap pads** to finger-drum; tapping also selects a pad for editing.
-- **16-step sequencer** per pad with a lookahead scheduler for tight timing,
-  plus **swing** and **tempo**.
+- **Banks (scenes)** you switch between, each an independent sequencer with its
+  own **16 pads** and its **own FX chain**. Start with a DRUMS bank (built-in
+  synth kit, makes noise immediately) and a SAMPLES bank. Add more of either with
+  **+ Drum machine** / **+ Sample bank**. All banks play together.
+- **Long-press a bank button** for its context menu: mute, rename, delete.
+- **Tap pads** to finger-drum; tapping also selects a pad for editing. Pads can
+  be renamed in the sound panel.
+- **Step sequencer** per pad with a lookahead scheduler for tight timing, plus
+  **swing** and **tempo**.
 - **Per-step locks** (P-LOCK mode): pitch, probability (chance), and velocity.
   Toggle **ALL STEPS** to apply a step edit across every step at once.
-- **Melodic / DAW mode (SAMPLES bank)**: sample pads are melodic instruments
-  edited in a **piano roll** — notes have pitch, position, and length across a
-  longer (2-bar) timeline, DAW-style, rather than a drum grid. Set the sample's
-  **base pitch (root note)** on the keyboard, audition by tapping keys, then draw
-  notes in the roll (pick a note length, tap to place, tap to remove). Note
-  length gates how long the sample sounds. Each melodic instrument is its own
-  track, so its filter/delay/reverb + master FX all apply.
-- **Polyrhythms / polymeter**: every drum track has its own **loop length**
-  (1–32 steps), set in the sequence panel. Give the kick 16 steps and the hat 12
-  and they drift against each other. Add more **drum machines** with the
-  "+ Drum machine" button in the Banks row — each is an independent sequencer.
-- The sequencer clock is **tick-based** and monotonic, so tracks/banks of
-  different lengths loop independently while staying locked to the same tempo.
-- **Universal settings**: the sound panel's **ALL PADS** toggle applies a knob
-  change to every pad in the bank instead of just the selected one.
-- **Per-pad sound**: volume, pan, filter (cutoff/resonance), pitch, delay send,
-  reverb send. Hats choke each other by default.
-- **Master FX**: bitcrusher + sample-rate reducer (AudioWorklet), master filter,
-  drive/saturation, tempo-synced delay feedback, and a limiter on the output.
-- **Performance buttons**: momentary FILTER slam and CRUSH slam (hold to apply).
-- **Record from the mic** (getUserMedia + MediaRecorder), then chop the take
-  across the SAMPLES bank or drop it on a single sample pad.
-- **Sample editor**: a waveform view where you drag to select an exact moment
-  (draggable start/end handles), preview the selection, and assign that region
-  to any sample pad. Recordings load into it automatically; you can also open a
-  file or reuse the last recording.
-- **Samples**: "Chop → samples" auto-slices a loop by **transient detection**
-  and spreads slices across the sample pads; "Load → sample pad" loads a whole
-  file onto one sample pad.
+- **Polyrhythms**: each bank has its own **loop length** (1–32 steps), shared by
+  all pads in that bank. Run two drum machines at 16 and 12 steps and they drift
+  against each other. The clock is **tick-based** and monotonic, so banks of
+  different lengths loop independently while staying locked to one tempo.
+- **Per-pad sound**: volume, pan, pitch, filter (type/cutoff/resonance), attack,
+  release, delay send, reverb send, and **MONO** (retriggering cuts off the
+  previous hit). **ALL PADS** applies a knob change across the whole bank.
+- **Per-scene FX**: bitcrusher + sample-rate reducer (AudioWorklet), filter
+  (LP/HP/BP), drive, tempo-synced delay feedback, phaser, and chorus — each bank
+  has its own, so FX only affect the scene you're on. One global limiter sits on
+  the summed output.
+- **Performance buttons**: momentary FILTER and CRUSH slams, applied to the
+  current scene and released back to its stored settings.
+- **Record from the mic** — captured as raw PCM (not MediaRecorder), so it never
+  hits a codec/decode failure on mobile.
+- **Sample library** in a slide-out drawer: everything you record or load is kept
+  in IndexedDB. Tap an entry to open it in the sample editor; delete with ✕.
+- **Sample editor**: a waveform view where you drag to select a region, preview
+  it, and assign it to a pad **in the current scene**.
+- **Samples load into the scene you're viewing**, on the selected pad. Chop
+  auto-slices a loop by **transient detection** across that scene's pads.
+- **Undo / redo** (↶ ↷ in the top bar, or Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z).
+  A slider drag collapses into one undo step.
+- **Export WAV** (offline render of the sequence) and **save/open project**
+  (JSON with samples embedded, so it reopens exactly as you left it).
 - **PWA**: installable to the home screen, works offline after first load.
 
 ## Signal routing
 
+FX are per bank, so each scene is processed independently and they sum into one
+global limiter.
+
 ```
-per pad:  source → env → filter → pan → gain ─┬────────────→ master.input (dry)
-                                              ├→ delaySend → delay bus
-                                              └→ reverbSend → reverb bus
-master:   input → bitcrush → filter → drive → limiter → output
-delay bus:  → delay (+filtered feedback) → back to master.input
-reverb bus: → convolver (synthetic IR)   → back to master.input
+per pad:  source → env → filter → pan → gain ─┬───────────→ its bank's chain.input
+                                              ├→ delaySend → that bank's delay bus
+                                              └→ reverbSend → that bank's reverb bus
+
+per bank: input → bitcrush → filter → drive → phaser → chorus → output bus
+          delay bus:  → delay (+filtered feedback) → back to that bank's input
+          reverb bus: → convolver (synthetic IR)   → back to that bank's input
+
+global:   output bus (sum of all banks) → limiter → destination
 ```
 
 ## Project layout
@@ -76,28 +77,32 @@ reverb bus: → convolver (synthetic IR)   → back to master.input
 ```
 src/
   audio/
-    AudioEngine.ts   engine: context, transport, tracks, sample loading
-    MasterChain.ts   master FX chain + delay/reverb send buses
+    AudioEngine.ts   engine: context, transport, banks, sample loading, undo
+                     snapshots, WAV export, project save/load
+    FxChain.ts       one FX chain per bank + its delay/reverb send buses
     Scheduler.ts     lookahead clock for tight step timing
     Track.ts         one pad: sound playback, envelope, filter, sends, choke
+    Recorder.ts      mic capture as raw PCM
+    SampleLibrary.ts IndexedDB store for recorded/loaded samples
+    wavEncode.ts     AudioBuffer → WAV (export + library persistence)
     synthDrums.ts    built-in procedurally-generated drum kit
     sampleUtils.ts   decode + transient/grid slicing
     dsp.ts           drive curve, reverb IR, pitch helpers
     types.ts         Step / TrackSettings
   ui/
-    App.ts           the whole interface, wired to the engine
-    dom.ts           small DOM + slider helpers
+    App.ts             the whole interface, wired to the engine
+    WaveformEditor.ts  waveform display + draggable region selection
+    dom.ts             small DOM + slider helpers
   main.ts            bootstrap + tap-to-start + service worker
 public/
   worklets/bitcrusher.js   bit-crush / sample-rate-reduce AudioWorklet
   manifest.webmanifest, icon.svg, sw.js
 ```
 
-## Natural next steps (from the design)
+## Natural next steps
 
 - **Stutter / beat-repeat** and **tape-stop** performance effects (AudioWorklet).
-- **Project save/load** to IndexedDB, bundling samples.
-- **Live resampling** (record master output back into a new sample to re-chop).
+- **Live resampling** (record the output back into a new sample to re-chop).
 - **Pattern chaining / song mode**, polymeter (per-track lengths), ratchets.
 - **MIDI clock + MIDI out** via the Web MIDI API.
 - Visual **waveform + slice markers** in a sample-edit page.

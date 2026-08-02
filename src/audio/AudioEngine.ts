@@ -1,4 +1,4 @@
-import { MasterChain } from "./MasterChain.ts";
+import { FxChain, defaultFxSettings, type FxSettings } from "./FxChain.ts";
 import { Scheduler } from "./Scheduler.ts";
 import { Track } from "./Track.ts";
 import { generateDrumKit, drumName } from "./synthDrums.ts";
@@ -6,6 +6,7 @@ import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
 import { audioBufferToWav } from "./wavEncode.ts";
 import { Recorder } from "./Recorder.ts";
 import { SampleLibrary, type SampleEntry } from "./SampleLibrary.ts";
+import type { Step, TrackSettings } from "./types.ts";
 
 export type BankKind = "synth" | "sample";
 
@@ -20,12 +21,34 @@ export interface EngineConfig {
   banks: BankConfig[];
 }
 
+/** A point-in-time copy of all editable state, for undo/redo. */
+export interface EngineSnapshot {
+  bpm: number;
+  swing: number;
+  banks: {
+    name: string;
+    kind: BankKind;
+    muted: boolean;
+    fx: FxSettings;
+    tracks: {
+      settings: TrackSettings;
+      steps: Step[];
+      length: number;
+      /** Shared by reference — snapshots never copy audio data. */
+      buffer: AudioBuffer | null;
+      region: [number, number] | null;
+    }[];
+  }[];
+}
+
 /** A group of pads/tracks shown together (e.g. DRUMS vs SAMPLES). */
 export interface Bank {
   name: string;
   kind: BankKind;
   tracks: Track[];
   muted: boolean;
+  /** This bank's own FX chain, so FX only affect this scene. */
+  chain: FxChain;
 }
 
 const DEFAULT_CONFIG: EngineConfig = {
@@ -39,7 +62,8 @@ const DEFAULT_CONFIG: EngineConfig = {
 /** Top-level audio engine: owns the context, master chain, banks, transport. */
 export class AudioEngine {
   readonly ctx: AudioContext;
-  master!: MasterChain;
+  /** Shared bus all bank chains sum into, before the one global limiter. */
+  private outputBus!: GainNode;
   readonly banks: Bank[] = [];
   readonly scheduler: Scheduler;
   readonly config: EngineConfig;
@@ -50,6 +74,7 @@ export class AudioEngine {
   lastRecording: AudioBuffer | null = null;
 
   private started = false;
+  private crushReady = false;
 
   /** UI hook: fired when the playhead reaches a step (driven by the UI's rAF loop). */
   onVisualStep: (step: number) => void = () => {};
@@ -78,18 +103,26 @@ export class AudioEngine {
     }
     await this.ctx.resume();
 
-    // Load the bitcrusher worklet; degrade gracefully if it fails.
-    let crushNode: AudioWorkletNode | null = null;
+    // Load the bitcrusher worklet once; each bank chain gets its own node.
     try {
       const url = new URL("worklets/bitcrusher.js", document.baseURI).href;
       await this.ctx.audioWorklet.addModule(url);
-      crushNode = new AudioWorkletNode(this.ctx, "bitcrusher");
+      this.crushReady = true;
     } catch (err) {
       console.warn("Bitcrusher worklet unavailable, continuing without it.", err);
     }
 
-    this.master = new MasterChain(this.ctx, crushNode);
-    this.updateDelayTime();
+    // All bank chains sum here, then through a single global limiter so the
+    // combined mix can't clip on phone speakers.
+    this.outputBus = this.ctx.createGain();
+    const limiter = this.ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.knee.value = 3;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.15;
+    this.outputBus.connect(limiter);
+    limiter.connect(this.ctx.destination);
 
     await this.library.init();
 
@@ -100,12 +133,30 @@ export class AudioEngine {
     this.started = true;
   }
 
+  /** Create a bitcrusher node for a chain, if the worklet loaded. */
+  private makeCrushNode(): AudioWorkletNode | null {
+    if (!this.crushReady) return null;
+    try {
+      return new AudioWorkletNode(this.ctx, "bitcrusher");
+    } catch {
+      return null;
+    }
+  }
+
   /** Construct a bank of pads/tracks from a config (used at init + when adding). */
   private buildBank(bankCfg: BankConfig): Bank {
-    const bank: Bank = { name: bankCfg.name, kind: bankCfg.kind, tracks: [], muted: false };
+    const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
+    chain.setDelayTime((60 / this.scheduler.bpm) * 0.75);
+    const bank: Bank = {
+      name: bankCfg.name,
+      kind: bankCfg.kind,
+      tracks: [],
+      muted: false,
+      chain,
+    };
     const kit = bankCfg.kind === "synth" ? generateDrumKit(this.ctx, bankCfg.pads) : null;
     for (let i = 0; i < bankCfg.pads; i++) {
-      const track = new Track(this.ctx, this.master, this.config.steps, {
+      const track = new Track(this.ctx, chain, this.config.steps, {
         name: kit ? drumName(i) : "empty",
         // Synth hats choke each other by default; sample pads don't choke.
         chokeGroup: kit && i % 8 === 2 ? 1 : 0,
@@ -149,12 +200,6 @@ export class AudioEngine {
     return this.banks.flatMap((b) => b.tracks);
   }
 
-  /** Index of the first sample bank (where recordings/loads go). */
-  get sampleBankIndex(): number {
-    const idx = this.banks.findIndex((b) => b.kind === "sample");
-    return idx >= 0 ? idx : this.banks.length - 1;
-  }
-
   get steps(): number {
     return this.config.steps;
   }
@@ -191,11 +236,15 @@ export class AudioEngine {
     return this.scheduler.swing;
   }
 
-  /** Sync the delay bus to a dotted-eighth of the current tempo. */
+  /** Sync every bank's delay bus to a dotted-eighth of the current tempo. */
   private updateDelayTime() {
-    if (!this.master) return;
     const dottedEighth = (60 / this.scheduler.bpm) * 0.75;
-    this.master.setDelayTime(dottedEighth);
+    for (const bank of this.banks) bank.chain.setDelayTime(dottedEighth);
+  }
+
+  /** The FX chain for a given bank (scene). */
+  chainFor(bankIndex: number): FxChain | undefined {
+    return this.banks[bankIndex]?.chain;
   }
 
   // ---- Playback -----------------------------------------------------------
@@ -239,21 +288,21 @@ export class AudioEngine {
 
   // ---- Sample loading (always targets the SAMPLES bank) -------------------
 
-  /** Decode a user file and slice it across the sample pads by transients. */
-  async loadAndSlice(file: File): Promise<number> {
+  /** Decode a user file and slice it across the given bank's pads. */
+  async loadAndSlice(file: File, bankIndex: number): Promise<number> {
     const raw = await file.arrayBuffer();
     const buffer = await decodeAudio(this.ctx, raw);
     await this.library.add(file.name, raw);
-    return this.sliceBufferAcrossPads(buffer);
+    return this.sliceBufferAcrossPads(buffer, bankIndex);
   }
 
-  /** Load a single file onto one sample pad (whole sample, no slicing). */
-  async loadOntoPad(padIndex: number, file: File): Promise<void> {
+  /** Load a single file onto one pad (whole sample, no slicing). */
+  async loadOntoPad(bankIndex: number, padIndex: number, file: File): Promise<void> {
     const raw = await file.arrayBuffer();
     const buffer = await decodeAudio(this.ctx, raw);
     const name = file.name.replace(/\.[^.]+$/, "").slice(0, 12);
     await this.library.add(file.name, raw);
-    this.loadBufferOntoPad(padIndex, buffer, name);
+    this.loadBufferOntoPad(bankIndex, padIndex, buffer, name);
   }
 
   private async decodeFile(file: File): Promise<AudioBuffer> {
@@ -265,9 +314,10 @@ export class AudioEngine {
     return this.decodeFile(file);
   }
 
-  /** Auto-slice a decoded buffer by transients and spread over the sample pads. */
-  sliceBufferAcrossPads(buffer: AudioBuffer): number {
-    const tracks = this.banks[this.sampleBankIndex].tracks;
+  /** Auto-slice a decoded buffer by transients across one bank's pads. */
+  sliceBufferAcrossPads(buffer: AudioBuffer, bankIndex: number): number {
+    const tracks = this.banks[bankIndex]?.tracks;
+    if (!tracks) return 0;
     const slices = sliceByTransients(buffer, tracks.length);
     slices.forEach((region, i) => {
       if (tracks[i]) {
@@ -278,24 +328,25 @@ export class AudioEngine {
     return slices.length;
   }
 
-  /** Put a whole decoded buffer onto one sample pad. */
-  loadBufferOntoPad(padIndex: number, buffer: AudioBuffer, name = "sample") {
-    const track = this.banks[this.sampleBankIndex].tracks[padIndex];
+  /** Put a whole decoded buffer onto one pad. */
+  loadBufferOntoPad(bankIndex: number, padIndex: number, buffer: AudioBuffer, name = "sample") {
+    const track = this.banks[bankIndex]?.tracks[padIndex];
     if (track) {
       track.setBuffer(buffer, null);
       track.settings.name = name;
     }
   }
 
-  /** Assign a manually-selected [start,end] region of a buffer to a sample pad. */
+  /** Assign a manually-selected [start,end] region of a buffer to a pad. */
   assignRegionToPad(
+    bankIndex: number,
     padIndex: number,
     buffer: AudioBuffer,
     start: number,
     end: number,
     name = "slice",
   ) {
-    const track = this.banks[this.sampleBankIndex].tracks[padIndex];
+    const track = this.banks[bankIndex]?.tracks[padIndex];
     if (track) {
       track.setBuffer(buffer, [start, end]);
       track.settings.name = name;
@@ -306,12 +357,12 @@ export class AudioEngine {
 
   private previewSource: AudioBufferSourceNode | null = null;
 
-  /** Audition a region of a buffer through the master chain. */
+  /** Audition a region of a buffer, dry, straight to the output bus. */
   previewRegion(buffer: AudioBuffer, start: number, end: number) {
     this.stopPreview();
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(this.master.input);
+    src.connect(this.outputBus);
     const duration = Math.max(0.02, end - start);
     src.start(this.ctx.currentTime + 0.005, start, duration);
     this.previewSource = src;
@@ -354,12 +405,6 @@ export class AudioEngine {
     return buffer;
   }
 
-  /** Load a sample from the library onto a pad in the samples bank. */
-  async loadLibraryEntry(entry: SampleEntry, padIndex: number): Promise<void> {
-    const buffer = await decodeAudio(this.ctx, entry.data);
-    this.loadBufferOntoPad(padIndex, buffer, entry.name.replace(/\.[^.]+$/, "").slice(0, 12));
-  }
-
   /** Decode a library entry into an AudioBuffer (for the editor, without assigning to a pad). */
   async loadLibraryEntryToBuffer(entry: SampleEntry): Promise<AudioBuffer> {
     return decodeAudio(this.ctx, entry.data);
@@ -385,25 +430,38 @@ export class AudioEngine {
 
     const offline = new OfflineAudioContext(2, Math.ceil(totalSeconds * this.ctx.sampleRate), this.ctx.sampleRate);
 
-    // Build a temporary master chain in the offline context.
-    const offMaster = new MasterChain(offline as unknown as AudioContext, null);
+    // Mirror the live graph: shared output bus + global limiter.
+    const offBus = offline.createGain();
+    const offLimiter = offline.createDynamicsCompressor();
+    offLimiter.threshold.value = -3;
+    offLimiter.knee.value = 3;
+    offLimiter.ratio.value = 20;
+    offLimiter.attack.value = 0.002;
+    offLimiter.release.value = 0.15;
+    offBus.connect(offLimiter);
+    offLimiter.connect(offline.destination);
 
-    // Build temporary tracks mirroring the current state.
+    // One FX chain per bank, matching that bank's settings. The bitcrusher is
+    // a worklet we don't load offline, so crush is omitted from the bounce.
     for (const bank of this.banks) {
+      if (bank.muted) continue;
+      const offChain = new FxChain(offline, null, offBus);
+      offChain.settings = { ...bank.chain.settings };
+      offChain.applySettings();
+      offChain.setDelayTime((60 / this.scheduler.bpm) * 0.75);
+
       for (const srcTrack of bank.tracks) {
         if (!srcTrack.buffer) continue;
-        const t = new Track(offline as unknown as AudioContext, offMaster, srcTrack.length, srcTrack.settings);
+        const t = new Track(offline, offChain, srcTrack.length, srcTrack.settings);
         t.setBuffer(srcTrack.buffer, srcTrack.region);
         t.steps = srcTrack.steps;
         t.setLength(srcTrack.length);
-        // Schedule every step.
         for (let step = 0; step < totalSteps; step++) {
           const local = step % t.length;
           const s = t.steps[local];
           if (!s || !s.on) continue;
           if (s.probability < 1 && Math.random() > s.probability) continue;
-          const when = step * stepDur + 0.01;
-          t.trigger(when, s.pitch, s.velocity);
+          t.trigger(step * stepDur + 0.01, s.pitch, s.velocity);
         }
       }
     }
@@ -425,6 +483,8 @@ export class AudioEngine {
       banks: this.banks.map((bank) => ({
         name: bank.name,
         kind: bank.kind,
+        muted: bank.muted,
+        fx: bank.chain.settings,
         tracks: bank.tracks.map((t) => ({
           settings: t.settings,
           steps: t.steps.slice(0, t.length),
@@ -451,9 +511,18 @@ export class AudioEngine {
     // Clear existing banks and rebuild from the project data.
     this.banks.length = 0;
     for (const bankData of project.banks) {
-      const bank: Bank = { name: bankData.name, kind: bankData.kind, tracks: [], muted: bankData.muted ?? false };
+      const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
+      chain.settings = { ...defaultFxSettings(), ...(bankData.fx ?? {}) };
+      chain.applySettings();
+      const bank: Bank = {
+        name: bankData.name,
+        kind: bankData.kind,
+        tracks: [],
+        muted: bankData.muted ?? false,
+        chain,
+      };
       for (const td of bankData.tracks) {
-        const track = new Track(this.ctx, this.master, td.length, td.settings);
+        const track = new Track(this.ctx, chain, td.length, td.settings);
         track.steps = td.steps;
         track.setLength(td.length);
         if (td.sampleData) {
@@ -465,6 +534,71 @@ export class AudioEngine {
       }
       this.banks.push(bank);
     }
+    this.updateDelayTime();
+  }
+
+  // ---- Undo / redo snapshots ----------------------------------------------
+
+  /**
+   * Capture the full editable state. AudioBuffers are shared by reference (not
+   * copied), so snapshots stay cheap even with lots of samples loaded.
+   */
+  snapshot(): EngineSnapshot {
+    return {
+      bpm: this.bpm,
+      swing: this.swing,
+      banks: this.banks.map((bank) => ({
+        name: bank.name,
+        kind: bank.kind,
+        muted: bank.muted,
+        fx: { ...bank.chain.settings },
+        tracks: bank.tracks.map((t) => ({
+          settings: { ...t.settings },
+          steps: t.steps.map((s) => ({ ...s })),
+          length: t.length,
+          buffer: t.buffer,
+          region: t.region ? ([...t.region] as [number, number]) : null,
+        })),
+      })),
+    };
+  }
+
+  /** Rebuild engine state from a snapshot (used by undo/redo). */
+  restore(snap: EngineSnapshot) {
+    this.bpm = snap.bpm;
+    this.swing = snap.swing;
+
+    // Tear down existing chains so we don't leave orphaned nodes running.
+    for (const bank of this.banks) {
+      try {
+        bank.chain.input.disconnect();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.banks.length = 0;
+
+    for (const bs of snap.banks) {
+      const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
+      chain.settings = { ...bs.fx };
+      chain.applySettings();
+      const bank: Bank = {
+        name: bs.name,
+        kind: bs.kind,
+        tracks: [],
+        muted: bs.muted,
+        chain,
+      };
+      for (const ts of bs.tracks) {
+        const track = new Track(this.ctx, chain, ts.length, ts.settings);
+        track.steps = ts.steps.map((s) => ({ ...s }));
+        track.setLength(ts.length);
+        track.setBuffer(ts.buffer, ts.region);
+        bank.tracks.push(track);
+      }
+      this.banks.push(bank);
+    }
+    this.updateDelayTime();
   }
 }
 

@@ -1,4 +1,4 @@
-import type { MasterChain } from "./MasterChain.ts";
+import type { FxChain } from "./FxChain.ts";
 import { semitonesToRate } from "./dsp.ts";
 import { defaultTrackSettings, type Step, type TrackSettings } from "./types.ts";
 import { defaultStep } from "./types.ts";
@@ -6,8 +6,8 @@ import { defaultStep } from "./types.ts";
 /**
  * One track = one pad = one sound + a 16-step sequence.
  *
- * Persistent per-track chain:
- *   [per-hit source → hitGain(env)] → filter → panner → gain → master.input
+ * Persistent per-track chain, feeding its own bank's FX chain:
+ *   [per-hit source → hitGain(env)] → filter → panner → gain → chain.input
  *                                                          ├→ delaySend → delayBus
  *                                                          └→ reverbSend → reverbBus
  */
@@ -20,7 +20,7 @@ export class Track {
   /** Loop length in steps. */
   length: number;
 
-  private readonly ctx: AudioContext;
+  private readonly ctx: BaseAudioContext;
 
   private readonly filter: BiquadFilterNode;
   private readonly panner: StereoPannerNode;
@@ -36,8 +36,8 @@ export class Track {
   region: [number, number] | null = null;
 
   constructor(
-    ctx: AudioContext,
-    master: MasterChain,
+    ctx: BaseAudioContext,
+    chain: FxChain,
     steps: number,
     settings?: Partial<TrackSettings>,
   ) {
@@ -54,11 +54,11 @@ export class Track {
 
     this.filter.connect(this.panner);
     this.panner.connect(this.gain);
-    this.gain.connect(master.input); // dry
+    this.gain.connect(chain.input); // dry
     this.gain.connect(this.delaySend);
     this.gain.connect(this.reverbSend);
-    this.delaySend.connect(master.delayBus);
-    this.reverbSend.connect(master.reverbBus);
+    this.delaySend.connect(chain.delayBus);
+    this.reverbSend.connect(chain.reverbBus);
 
     this.applySettings();
   }
