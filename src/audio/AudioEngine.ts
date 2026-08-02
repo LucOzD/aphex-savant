@@ -51,8 +51,16 @@ export class AudioEngine {
 
   private started = false;
 
-  /** UI hook: fired (on the main thread) when the playhead reaches a step. */
+  /** UI hook: fired when the playhead reaches a step (driven by the UI's rAF loop). */
   onVisualStep: (step: number) => void = () => {};
+
+  /**
+   * Steps that have been scheduled but not yet reached by the audio clock.
+   * The UI drains this in a requestAnimationFrame loop so the on-screen
+   * playhead lines up with what you actually hear. Using the audio clock here
+   * (rather than setTimeout) is what keeps the highlight from drifting.
+   */
+  private visualQueue: { step: number; time: number }[] = [];
 
   constructor(config: EngineConfig = DEFAULT_CONFIG) {
     this.config = config;
@@ -160,6 +168,7 @@ export class AudioEngine {
 
   stop() {
     this.scheduler.stop();
+    this.visualQueue.length = 0;
     this.onVisualStep(-1);
   }
 
@@ -195,7 +204,8 @@ export class AudioEngine {
   padHit(bankIndex: number, padIndex: number, velocity = 1) {
     const track = this.banks[bankIndex]?.tracks[padIndex];
     if (!track) return;
-    track.trigger(this.ctx.currentTime + 0.005, 0, velocity);
+    // Schedule at the current audio time for the lowest possible latency.
+    track.trigger(this.ctx.currentTime, 0, velocity);
   }
 
   private handleStep(absStep: number, time: number) {
@@ -210,8 +220,21 @@ export class AudioEngine {
         track.trigger(time, s.pitch, s.velocity);
       }
     }
-    const delayMs = Math.max(0, (time - this.ctx.currentTime) * 1000);
-    window.setTimeout(() => this.onVisualStep(absStep), delayMs);
+    // Queue the highlight; the UI drains it against the audio clock.
+    this.visualQueue.push({ step: absStep, time });
+  }
+
+  /**
+   * Return the step the audio clock has actually reached, or null if it hasn't
+   * advanced since the last call. Called from the UI's animation loop.
+   */
+  drainVisualStep(): number | null {
+    const now = this.ctx.currentTime;
+    let latest: number | null = null;
+    while (this.visualQueue.length > 0 && this.visualQueue[0].time <= now) {
+      latest = this.visualQueue.shift()!.step;
+    }
+    return latest;
   }
 
   // ---- Sample loading (always targets the SAMPLES bank) -------------------

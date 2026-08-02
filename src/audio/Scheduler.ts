@@ -4,10 +4,18 @@
  * clock, so timing stays tight even when the main thread is busy.
  */
 export class Scheduler {
-  /** How often the timer fires, ms. */
-  private readonly interval = 25;
-  /** How far ahead we schedule, seconds. */
-  private readonly lookahead = 0.1;
+  /**
+   * How often the timer fires, ms. Kept short so edits you make while playing
+   * (toggling a step, changing a knob) get picked up quickly.
+   */
+  private readonly interval = 10;
+  /**
+   * How far ahead we schedule, seconds. This is the tradeoff: a wider window is
+   * more robust against main-thread stalls, but it also means a step you toggle
+   * may already have been scheduled, which feels unresponsive. 40ms is enough
+   * headroom to survive a dropped frame while still reacting quickly.
+   */
+  private readonly lookahead = 0.04;
 
   private ctx: AudioContext;
   private timer: number | null = null;
@@ -38,7 +46,9 @@ export class Scheduler {
   start() {
     if (this.timer !== null) return;
     this.step = 0;
-    this.nextNoteTime = this.ctx.currentTime + 0.05;
+    // Small offset so the first step isn't scheduled in the past.
+    this.nextNoteTime = this.ctx.currentTime + 0.015;
+    this.tick(); // schedule immediately rather than waiting for the first timer
     this.timer = window.setInterval(() => this.tick(), this.interval);
   }
 

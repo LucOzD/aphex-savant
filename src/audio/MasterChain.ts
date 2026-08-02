@@ -157,7 +157,9 @@ export class MasterChain {
     // Reverb send bus.
     this.reverbBus = ctx.createGain();
     const convolver = ctx.createConvolver();
-    convolver.buffer = makeReverbIR(ctx);
+    // Convolution cost scales with IR length and this runs constantly, so keep
+    // the tail modest — it buys real CPU headroom on phones.
+    convolver.buffer = makeReverbIR(ctx, 1.6);
     this.reverbBus.connect(convolver);
     convolver.connect(this.input);
   }

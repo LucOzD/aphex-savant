@@ -46,7 +46,25 @@ export class App {
   constructor(engine: AudioEngine, root: HTMLElement) {
     this.engine = engine;
     this.root = root;
+    // Stop() pushes -1 through here to clear the highlight.
     this.engine.onVisualStep = (s) => this.highlightPlayhead(s);
+    this.startVisualLoop();
+  }
+
+  /**
+   * Animation loop that syncs the on-screen playhead to the audio clock.
+   * Running this on rAF (rather than a timer per step) keeps the highlight
+   * locked to what you hear and costs nothing when stopped.
+   */
+  private startVisualLoop() {
+    const frame = () => {
+      if (this.engine.isPlaying) {
+        const step = this.engine.drainVisualStep();
+        if (step !== null) this.highlightPlayhead(step);
+      }
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
   }
 
   mount() {
