@@ -1,6 +1,27 @@
 // Shared audio + sequencer types.
 
+import type { ChordExtension, ChordQualityId, ChordVoicing, ScaleId } from "./musicTheory.ts";
+
 export type FilterType = "lowpass" | "highpass" | "bandpass";
+export type PlayingLayout = "keys" | "scale" | "chords";
+export type ChordSubmode = "diatonic" | "free";
+
+/** Persisted performance state for one sample instrument/pad. */
+export interface MelodicPerformanceSettings {
+  /** MIDI note at which the sample plays at its original speed. */
+  sampleRootMidi: number;
+  playLayout: PlayingLayout;
+  scaleRoot: number;
+  scaleId: ScaleId;
+  performanceOctave: number;
+  chordSubmode: ChordSubmode;
+  chordExtension: ChordExtension;
+  chordQuality: ChordQualityId;
+  chordInversion: number;
+  chordVoicing: ChordVoicing;
+  chordStrumMs: number;
+  polyphony: number;
+}
 
 /** A step in a track's sequence. */
 export interface Step {
@@ -14,7 +35,7 @@ export interface Step {
 }
 
 /** Per-track sound + routing settings. */
-export interface TrackSettings {
+export interface TrackSettings extends MelodicPerformanceSettings {
   name: string;
   /** 0..1 track volume. */
   gain: number;
@@ -51,6 +72,18 @@ export function defaultTrackSettings(name: string): TrackSettings {
     delaySend: 0,
     reverbSend: 0,
     playbackRate: 1,
+    sampleRootMidi: 60,
+    playLayout: "scale",
+    scaleRoot: 0,
+    scaleId: "major",
+    performanceOctave: 4,
+    chordSubmode: "diatonic",
+    chordExtension: "triad",
+    chordQuality: "major",
+    chordInversion: 0,
+    chordVoicing: "close",
+    chordStrumMs: 0,
+    polyphony: 8,
     attack: 0.001,
     release: 0.25,
     chokeGroup: 0,

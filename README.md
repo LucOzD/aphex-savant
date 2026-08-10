@@ -35,6 +35,12 @@ us start audio (especially on iOS).
 - **Per-pad sound**: volume, pan, pitch, filter (type/cutoff/resonance), attack,
   release, delay send, reverb send, and **MONO** (retriggering cuts off the
   previous hit). **ALL PADS** applies a knob change across the whole bank.
+- **Melodic sample performer** on every selected sample pad with **KEYS, SCALE,
+  and CHORDS** layouts. Scale mode provides 20 scales × 12 roots on a 4×4 pad
+  grid. Chords supports scale-derived triads/7ths/9ths and 20 free chord
+  qualities, inversions, open voicing, and cancellable tempo-safe strums.
+  Performance state is saved per sample pad; playback uses an 8-voice default
+  limit through the pad's existing shared effects path.
 - **Per-scene FX rack**: three user-assignable insert slots, ordered left to
   right. Choose from filter, drive, crusher, phaser, chorus, **Grain, Resonate,
   Tape, Repeater, Space, Fold, Dub, Formant, Motion, and Transient**, each with
@@ -87,7 +93,9 @@ src/
                      snapshots, WAV export, project save/load
     FxChain.ts       one FX chain per bank + its delay/reverb send buses
     Scheduler.ts     lookahead clock for tight step timing
-    Track.ts         one pad: sound playback, envelope, filter, sends, choke
+    Track.ts         one pad: polyphonic sample voices, envelope, filter,
+                     sends, note-on/off, voice stealing and choke
+    musicTheory.ts   dependency-free scales, chords, naming and voicing
     Recorder.ts      mic capture as raw PCM
     SampleLibrary.ts IndexedDB store for recorded/loaded samples
     wavEncode.ts     AudioBuffer → WAV (export + library persistence)
@@ -96,9 +104,10 @@ src/
     dsp.ts           drive curve, reverb IR, pitch helpers
     types.ts         Step / TrackSettings
   ui/
-    App.ts             the whole interface, wired to the engine
-    WaveformEditor.ts  waveform display + draggable region selection
-    dom.ts             small DOM + slider helpers
+    App.ts                 main sampler/sequencer interface
+    MelodicPerformance.ts melodic keys, scale pads, chord pads + pickers
+    WaveformEditor.ts     waveform display + draggable region selection
+    dom.ts                small DOM + slider helpers
   main.ts            bootstrap + tap-to-start + service worker
 public/
   worklets/bitcrusher.js    bit-crush / sample-rate-reduce AudioWorklet

@@ -5,6 +5,7 @@ import type { Step } from "../audio/types.ts";
 import type { SampleEntry } from "../audio/SampleLibrary.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
+import { MelodicPerformance } from "./MelodicPerformance.ts";
 import { el, slider } from "./dom.ts";
 
 type NumericSlotKey = Exclude<keyof EffectSlotSettings, "type" | "filterType">;
@@ -34,6 +35,7 @@ export class App {
   private lastPlayhead = -1;
   private trackPanel!: HTMLElement;
   private stepPanel!: HTMLElement;
+  private melodic!: MelodicPerformance;
 
   // Sample editor.
   private editor = new WaveformEditor();
@@ -86,10 +88,12 @@ export class App {
   mount() {
     this.root.innerHTML = "";
     this.root.append(this.buildTopbar());
+    this.melodic = new MelodicPerformance(this.engine, () => this.commit());
     const main = el("main");
     main.append(
       this.buildBankSwitcher(),
       this.buildPads(),
+      this.melodic.element,
       this.buildSequencer(),
       this.buildStepPanel(),
       this.buildTrackPanel(),
@@ -1258,6 +1262,7 @@ export class App {
     this.renderStepGrid();
     this.refreshStepPanel();
     this.refreshTrackPanel();
+    this.melodic?.setTarget(this.selectedBank, this.selectedPad);
     // FX are per scene, so this follows the selected bank.
     if (this.masterPanel) this.refreshMasterPanel();
     this.refreshEditorTargets();

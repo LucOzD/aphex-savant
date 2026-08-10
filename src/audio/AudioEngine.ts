@@ -1,6 +1,6 @@
 import { FxChain, defaultFxSettings, type FxSettings } from "./FxChain.ts";
 import { Scheduler } from "./Scheduler.ts";
-import { Track } from "./Track.ts";
+import { Track, type VoiceId } from "./Track.ts";
 import { generateDrumKit, drumName } from "./synthDrums.ts";
 import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
 import { audioBufferToWav } from "./wavEncode.ts";
@@ -19,6 +19,12 @@ export interface BankConfig {
 export interface EngineConfig {
   steps: number;
   banks: BankConfig[];
+}
+
+export interface NoteHandle {
+  /** Stable track reference keeps releases safe if bank indexes later move. */
+  track: Track;
+  voiceId: VoiceId;
 }
 
 /** A point-in-time copy of all editable state, for undo/redo. */
@@ -215,7 +221,8 @@ export class AudioEngine {
   deleteBank(index: number): boolean {
     if (this.banks.length <= 1) return false;
     if (index < 0 || index >= this.banks.length) return false;
-    this.banks.splice(index, 1);
+    const [removed] = this.banks.splice(index, 1);
+    removed.tracks.forEach((track) => track.dispose());
     return true;
   }
 
@@ -287,6 +294,37 @@ export class AudioEngine {
     if (!track) return;
     // Schedule at the current audio time for the lowest possible latency.
     track.trigger(this.ctx.currentTime, 0, velocity);
+  }
+
+  /** Start an ordinary MIDI note on a selected sample track. */
+  noteOn(
+    bankIndex: number,
+    padIndex: number,
+    midi: number,
+    velocity = 1,
+    delaySeconds = 0,
+  ): NoteHandle | null {
+    const bank = this.banks[bankIndex];
+    const track = bank?.tracks[padIndex];
+    if (!track || bank.muted) return null;
+    const voiceId = track.noteOnMidi(
+      this.ctx.currentTime + Math.max(0, delaySeconds),
+      Math.max(0, Math.min(127, Math.round(midi))),
+      velocity,
+    );
+    return voiceId === null ? null : { track, voiceId };
+  }
+
+  noteOff(handle: NoteHandle, when = this.ctx.currentTime) {
+    handle.track.noteOff(handle.voiceId, when);
+  }
+
+  allNotesOff(bankIndex?: number, padIndex?: number) {
+    const banks = bankIndex === undefined ? this.banks : this.banks.slice(bankIndex, bankIndex + 1);
+    for (const bank of banks) {
+      const tracks = padIndex === undefined ? bank.tracks : bank.tracks.slice(padIndex, padIndex + 1);
+      tracks.forEach((track) => track.allNotesOff(this.ctx.currentTime, true));
+    }
   }
 
   private handleStep(absStep: number, time: number) {
@@ -544,6 +582,7 @@ export class AudioEngine {
     this.swing = project.swing ?? 0;
 
     // Clear existing banks and rebuild from the project data.
+    for (const bank of this.banks) bank.tracks.forEach((track) => track.dispose());
     this.banks.length = 0;
     for (const bankData of project.banks) {
       const chain = this.makeLiveChain();
@@ -613,8 +652,9 @@ export class AudioEngine {
     this.bpm = snap.bpm;
     this.swing = snap.swing;
 
-    // Tear down existing chains so we don't leave orphaned nodes running.
+    // Tear down existing voices/chains so undo never leaves hanging notes.
     for (const bank of this.banks) {
+      bank.tracks.forEach((track) => track.dispose());
       try {
         bank.chain.input.disconnect();
       } catch {
