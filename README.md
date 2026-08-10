@@ -35,10 +35,13 @@ us start audio (especially on iOS).
 - **Per-pad sound**: volume, pan, pitch, filter (type/cutoff/resonance), attack,
   release, delay send, reverb send, and **MONO** (retriggering cuts off the
   previous hit). **ALL PADS** applies a knob change across the whole bank.
-- **Per-scene FX**: bitcrusher + sample-rate reducer (AudioWorklet), filter
-  (LP/HP/BP), drive, tempo-synced delay feedback, phaser, and chorus — each bank
-  has its own, so FX only affect the scene you're on. One global limiter sits on
-  the summed output.
+- **Per-scene FX rack**: three user-assignable insert slots, ordered left to
+  right. Choose from filter, drive, crusher, phaser, chorus, **Grain, Resonate,
+  Tape, Repeater, Space, Fold, Dub, Formant, Motion, and Transient**, each with
+  focused controls. Moving an effect to another slot preserves its settings,
+  and each bank keeps an independent rack. Heavy effects are created lazily so
+  unused choices cost no DSP. Per-pad delay/reverb sends remain separate. One
+  global limiter sits on the summed output.
 - **Performance buttons**: momentary FILTER and CRUSH slams, applied to the
   current scene and released back to its stored settings.
 - **Record from the mic** — captured as raw PCM (not MediaRecorder), so it never
@@ -65,9 +68,12 @@ per pad:  source → env → filter → pan → gain ─┬───────
                                               ├→ delaySend → that bank's delay bus
                                               └→ reverbSend → that bank's reverb bus
 
-per bank: input → bitcrush → filter → drive → phaser → chorus → output bus
-          delay bus:  → delay (+filtered feedback) → back to that bank's input
-          reverb bus: → convolver (synthetic IR)   → back to that bank's input
+per bank: input → [slot 1] → [slot 2] → [slot 3] → output bus
+          each slot: empty | filter | drive | crusher | phaser | chorus
+                     grain | resonate | tape | repeater | space | fold
+                     dub | formant | motion | transient
+          delay bus:  → delay (+filtered feedback) → back before slot 1
+          reverb bus: → convolver (synthetic IR)   → back before slot 1
 
 global:   output bus (sum of all banks) → limiter → destination
 ```
@@ -95,13 +101,13 @@ src/
     dom.ts             small DOM + slider helpers
   main.ts            bootstrap + tap-to-start + service worker
 public/
-  worklets/bitcrusher.js   bit-crush / sample-rate-reduce AudioWorklet
+  worklets/bitcrusher.js    bit-crush / sample-rate-reduce AudioWorklet
+  worklets/creative-fx.js   grain, tape, repeater, shimmer + transient DSP
   manifest.webmanifest, icon.svg, sw.js
 ```
 
 ## Natural next steps
 
-- **Stutter / beat-repeat** and **tape-stop** performance effects (AudioWorklet).
 - **Live resampling** (record the output back into a new sample to re-chop).
 - **Pattern chaining / song mode**, polymeter (per-track lengths), ratchets.
 - **MIDI clock + MIDI out** via the Web MIDI API.

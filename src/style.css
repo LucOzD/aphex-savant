@@ -258,6 +258,59 @@ main {
   border-radius: 12px;
   padding: 12px;
 }
+
+/* Ordered per-scene insert rack. Horizontal on wide screens, stacked on phones. */
+.fx-rack {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.fx-slot {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.fx-slot.empty {
+  border-style: dashed;
+  background: #14141c;
+}
+.fx-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.fx-slot-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.fx-slot-controls .field {
+  flex: 1 1 110px;
+  min-width: 0;
+}
+.fx-slot-controls .field input[type="range"] {
+  width: 100%;
+}
+.fx-type {
+  min-width: 0;
+  max-width: 130px;
+  padding: 7px 8px;
+}
+
+@media (max-width: 767px) {
+  .fx-rack {
+    grid-template-columns: 1fr;
+  }
+}
+
 .row {
   display: flex;
   gap: 14px;

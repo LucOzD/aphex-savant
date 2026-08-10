@@ -1,10 +1,13 @@
 import type { AudioEngine, EngineSnapshot } from "../audio/AudioEngine.ts";
+import type { EffectSlotSettings, EffectType } from "../audio/FxChain.ts";
 import type { Track } from "../audio/Track.ts";
 import type { Step } from "../audio/types.ts";
 import type { SampleEntry } from "../audio/SampleLibrary.ts";
 import { isRecordingSupported } from "../audio/Recorder.ts";
 import { WaveformEditor } from "./WaveformEditor.ts";
 import { el, slider } from "./dom.ts";
+
+type NumericSlotKey = Exclude<keyof EffectSlotSettings, "type" | "filterType">;
 
 /** Builds and manages the whole UI, wired to an AudioEngine. */
 export class App {
@@ -614,81 +617,264 @@ export class App {
     return section;
   }
 
-  /**
-   * Rebuild the FX panel for the selected bank. Each bank owns its own chain,
-   * so switching banks shows (and edits) that scene's values.
-   */
+  /** Rebuild the three-slot insert rack for the selected scene. */
   private refreshMasterPanel() {
     const chain = this.engine.chainFor(this.selectedBank);
     this.masterPanel.innerHTML = "";
     if (!chain) return;
-    const fx = chain.settings;
-    const apply = () => chain.applySettings();
 
-    this.masterTitle.textContent = `Scene FX — ${this.bank().name} only`;
-
-    const filterType = el("select", { class: "ctrl" }) as HTMLSelectElement;
-    for (const t of ["lowpass", "highpass", "bandpass"]) {
-      const opt = el("option", { value: t }, [t.toUpperCase()]);
-      if (t === fx.filterType) opt.setAttribute("selected", "");
-      filterType.append(opt);
-    }
-    filterType.addEventListener("change", () => {
-      fx.filterType = filterType.value as BiquadFilterType;
-      apply();
+    this.masterTitle.textContent = `Scene FX rack — ${this.bank().name} only`;
+    const rack = el("div", { class: "fx-rack" });
+    chain.settings.slots.forEach((slot, index) => {
+      rack.append(this.buildEffectSlot(index, slot));
     });
-
     this.masterPanel.append(
-      el("div", { class: "row" }, [
-        slider({ label: "CRUSH BITS", min: 1, max: 16, step: 1, value: fx.crushBits,
-          onInput: (v) => { fx.crushBits = v; apply(); },
-        }),
-        slider({ label: "SR REDUCE", min: 1, max: 40, step: 1, value: fx.crushReduction,
-          format: (v) => `${v}x`, onInput: (v) => { fx.crushReduction = v; apply(); },
-        }),
-        slider({ label: "CRUSH MIX", min: 0, max: 1, step: 0.01, value: fx.crushMix,
-          format: (v) => `${Math.round(v * 100)}`,
-          onInput: (v) => { fx.crushMix = v; apply(); },
-        }),
-      ]),
-      el("div", { class: "row" }, [
-        el("label", { class: "field" }, [el("span", {}, ["FILTER TYPE"]), filterType]),
-        slider({ label: "FILTER FREQ", min: 200, max: 20000, step: 10, value: fx.filterFreq,
-          format: (v) => `${Math.round(v)}Hz`, onInput: (v) => { fx.filterFreq = v; apply(); },
-        }),
-        slider({ label: "FILTER Q", min: 0.1, max: 20, step: 0.1, value: fx.filterQ,
-          format: (v) => v.toFixed(1), onInput: (v) => { fx.filterQ = v; apply(); },
-        }),
-        slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: fx.drive,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.drive = v; apply(); },
-        }),
-      ]),
-      el("div", { class: "row" }, [
-        slider({ label: "DELAY FBK", min: 0, max: 0.95, step: 0.01, value: fx.delayFeedback,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.delayFeedback = v; apply(); },
-        }),
-        slider({ label: "PHASER MIX", min: 0, max: 1, step: 0.01, value: fx.phaserMix,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.phaserMix = v; apply(); },
-        }),
-        slider({ label: "PHASER RATE", min: 0.05, max: 8, step: 0.05, value: fx.phaserRate,
-          format: (v) => `${v.toFixed(2)} Hz`, onInput: (v) => { fx.phaserRate = v; apply(); },
-        }),
-        slider({ label: "PHASER DEPTH", min: 100, max: 3000, step: 10, value: fx.phaserDepth,
-          format: (v) => `${Math.round(v)}`, onInput: (v) => { fx.phaserDepth = v; apply(); },
-        }),
-      ]),
-      el("div", { class: "row" }, [
-        slider({ label: "CHORUS MIX", min: 0, max: 1, step: 0.01, value: fx.chorusMix,
-          format: (v) => `${Math.round(v * 100)}`, onInput: (v) => { fx.chorusMix = v; apply(); },
-        }),
-        slider({ label: "CHORUS RATE", min: 0.1, max: 6, step: 0.1, value: fx.chorusRate,
-          format: (v) => `${v.toFixed(1)} Hz`, onInput: (v) => { fx.chorusRate = v; apply(); },
-        }),
-        slider({ label: "CHORUS DEPTH", min: 0.001, max: 0.015, step: 0.001, value: fx.chorusDepth,
-          format: (v) => `${(v * 1000).toFixed(1)} ms`, onInput: (v) => { fx.chorusDepth = v; apply(); },
-        }),
+      rack,
+      el("p", { class: "hint" }, [
+        "Signal flows left to right: slot 1 → slot 2 → slot 3. " +
+          "Delay/reverb remain per-pad sends in the sound panel.",
       ]),
     );
+  }
+
+  private buildEffectSlot(index: number, slot: EffectSlotSettings): HTMLElement {
+    const chain = this.engine.chainFor(this.selectedBank)!;
+    const typeSelect = el("select", { class: "ctrl fx-type" }) as HTMLSelectElement;
+    const choices: EffectType[] = [
+      "none", "filter", "drive", "crusher", "phaser", "chorus",
+      "grain", "resonate", "tape", "repeater", "space",
+      "fold", "dub", "formant", "motion", "transient",
+    ];
+    for (const type of choices) {
+      const label = type === "none" ? "EMPTY" : type.toUpperCase();
+      const option = el("option", { value: type }, [label]);
+      if (type === slot.type) option.setAttribute("selected", "");
+      typeSelect.append(option);
+    }
+    typeSelect.addEventListener("change", () => {
+      chain.setSlotType(index, typeSelect.value as EffectType);
+      this.refreshMasterPanel();
+    });
+
+    const controls = el("div", { class: "fx-slot-controls" });
+    this.appendEffectControls(controls, slot, () => chain.applySettings());
+
+    return el("div", { class: `fx-slot${slot.type === "none" ? " empty" : ""}` }, [
+      el("div", { class: "fx-slot-head" }, [
+        el("strong", {}, [`SLOT ${index + 1}`]),
+        typeSelect,
+      ]),
+      controls,
+    ]);
+  }
+
+  private appendEffectControls(
+    root: HTMLElement,
+    slot: EffectSlotSettings,
+    apply: () => void,
+  ) {
+    const pct = (v: number) => `${Math.round(v * 100)}%`;
+    const set = (key: NumericSlotKey) => (v: number) => {
+      slot[key] = v;
+      apply();
+    };
+    const numberSelect = (
+      label: string,
+      key: NumericSlotKey,
+      options: { value: number; label: string }[],
+    ) => {
+      const select = el("select", { class: "ctrl" }) as HTMLSelectElement;
+      for (const item of options) {
+        const option = el("option", { value: String(item.value) }, [item.label]);
+        if (item.value === slot[key]) option.setAttribute("selected", "");
+        select.append(option);
+      }
+      select.addEventListener("change", () => {
+        slot[key] = Number(select.value);
+        apply();
+      });
+      return el("label", { class: "field" }, [el("span", {}, [label]), select]);
+    };
+    const divisions = [2, 4, 8, 16, 32].map((value) => ({
+      value,
+      label: `1/${value}`,
+    }));
+
+    const midiName = (value: number) => {
+      const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+      const note = Math.round(value);
+      return `${names[((note % 12) + 12) % 12]}${Math.floor(note / 12) - 1}`;
+    };
+
+    if (slot.type === "none") {
+      root.append(el("span", { class: "hint" }, ["Choose an effect"]));
+      return;
+    }
+
+    if (slot.type === "filter") {
+      const mode = el("select", { class: "ctrl" }) as HTMLSelectElement;
+      for (const type of ["lowpass", "highpass", "bandpass"] as BiquadFilterType[]) {
+        const option = el("option", { value: type }, [type.toUpperCase()]);
+        if (type === slot.filterType) option.setAttribute("selected", "");
+        mode.append(option);
+      }
+      mode.addEventListener("change", () => {
+        slot.filterType = mode.value as BiquadFilterType;
+        apply();
+      });
+      root.append(
+        el("label", { class: "field" }, [el("span", {}, ["MODE"]), mode]),
+        slider({ label: "FREQ", min: 100, max: 20000, step: 10, value: slot.frequency,
+          format: (v) => `${Math.round(v)}Hz`, onInput: set("frequency") }),
+        slider({ label: "Q", min: 0.1, max: 20, step: 0.1, value: slot.q,
+          format: (v) => v.toFixed(1), onInput: set("q") }),
+      );
+    } else if (slot.type === "drive") {
+      root.append(
+        slider({ label: "AMOUNT", min: 0, max: 1, step: 0.01, value: slot.drive,
+          format: pct, onInput: set("drive") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "crusher") {
+      root.append(
+        slider({ label: "BITS", min: 1, max: 16, step: 1, value: slot.bits,
+          onInput: set("bits") }),
+        slider({ label: "REDUCE", min: 1, max: 40, step: 1, value: slot.reduction,
+          format: (v) => `${v}x`, onInput: set("reduction") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "phaser") {
+      root.append(
+        slider({ label: "RATE", min: 0.05, max: 8, step: 0.05, value: slot.rate,
+          format: (v) => `${v.toFixed(2)}Hz`, onInput: set("rate") }),
+        slider({ label: "DEPTH", min: 100, max: 3000, step: 10, value: slot.depth,
+          format: (v) => `${Math.round(v)}`, onInput: set("depth") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "chorus") {
+      root.append(
+        slider({ label: "RATE", min: 0.1, max: 6, step: 0.1, value: slot.rate,
+          format: (v) => `${v.toFixed(1)}Hz`, onInput: set("rate") }),
+        slider({ label: "DEPTH", min: 0.001, max: 0.015, step: 0.001, value: slot.depth,
+          format: (v) => `${(v * 1000).toFixed(1)}ms`, onInput: set("depth") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "grain") {
+      root.append(
+        slider({ label: "POSITION", min: 0, max: 1, step: 0.01, value: slot.position,
+          format: pct, onInput: set("position") }),
+        slider({ label: "GRAIN SIZE", min: 0.02, max: 0.5, step: 0.01, value: slot.grainSize,
+          format: (v) => `${Math.round(v * 1000)}ms`, onInput: set("grainSize") }),
+        slider({ label: "SPRAY", min: 0, max: 1, step: 0.01, value: slot.spray,
+          format: pct, onInput: set("spray") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "resonate") {
+      root.append(
+        slider({ label: "TUNE", min: 24, max: 84, step: 1, value: slot.tune,
+          format: midiName, onInput: set("tune") }),
+        slider({ label: "DECAY", min: 0, max: 1, step: 0.01, value: slot.decay,
+          format: pct, onInput: set("decay") }),
+        slider({ label: "COLOR", min: 0, max: 1, step: 0.01, value: slot.color,
+          format: pct, onInput: set("color") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "tape") {
+      root.append(
+        slider({ label: "AGE", min: 0, max: 1, step: 0.01, value: slot.age,
+          format: pct, onInput: set("age") }),
+        slider({ label: "WOBBLE", min: 0, max: 1, step: 0.01, value: slot.wobble,
+          format: pct, onInput: set("wobble") }),
+        slider({ label: "DROPOUT", min: 0, max: 1, step: 0.01, value: slot.dropout,
+          format: pct, onInput: set("dropout") }),
+        slider({ label: "DRIVE", min: 0, max: 1, step: 0.01, value: slot.drive,
+          format: pct, onInput: set("drive") }),
+      );
+    } else if (slot.type === "repeater") {
+      root.append(
+        numberSelect("DIVISION", "division", divisions),
+        slider({ label: "JITTER", min: 0, max: 1, step: 0.01, value: slot.jitter,
+          format: pct, onInput: set("jitter") }),
+        numberSelect("REVERSE", "reverse", [
+          { value: 0, label: "OFF" }, { value: 1, label: "ON" },
+        ]),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "space") {
+      root.append(
+        slider({ label: "SIZE", min: 0, max: 1, step: 0.01, value: slot.size,
+          format: pct, onInput: set("size") }),
+        slider({ label: "COLOR", min: 0, max: 1, step: 0.01, value: slot.color,
+          format: pct, onInput: set("color") }),
+        slider({ label: "SHIMMER", min: 0, max: 1, step: 0.01, value: slot.shimmer,
+          format: pct, onInput: set("shimmer") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "fold") {
+      root.append(
+        slider({ label: "FOLD", min: 0, max: 1, step: 0.01, value: slot.fold,
+          format: pct, onInput: set("fold") }),
+        slider({ label: "BIAS", min: -1, max: 1, step: 0.01, value: slot.bias,
+          format: (v) => v.toFixed(2), onInput: set("bias") }),
+        slider({ label: "TONE", min: 0, max: 1, step: 0.01, value: slot.tone,
+          format: pct, onInput: set("tone") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "dub") {
+      root.append(
+        numberSelect("TIME", "time", divisions),
+        slider({ label: "FEEDBACK", min: 0, max: 0.88, step: 0.01, value: slot.feedback,
+          format: pct, onInput: set("feedback") }),
+        slider({ label: "TONE", min: 0, max: 1, step: 0.01, value: slot.tone,
+          format: pct, onInput: set("tone") }),
+        slider({ label: "WOBBLE", min: 0, max: 1, step: 0.01, value: slot.wobble,
+          format: pct, onInput: set("wobble") }),
+      );
+    } else if (slot.type === "formant") {
+      root.append(
+        slider({ label: "VOWEL", min: 0, max: 4, step: 0.01, value: slot.vowel,
+          format: (v) => ["A", "E", "I", "O", "U"][Math.round(v)], onInput: set("vowel") }),
+        slider({ label: "SHIFT", min: -24, max: 24, step: 1, value: slot.shift,
+          format: (v) => `${v > 0 ? "+" : ""}${v}st`, onInput: set("shift") }),
+        slider({ label: "RESONANCE", min: 0, max: 1, step: 0.01, value: slot.resonance,
+          format: pct, onInput: set("resonance") }),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "motion") {
+      root.append(
+        slider({ label: "RATE", min: 0.03, max: 12, step: 0.01, value: slot.rate,
+          format: (v) => `${v.toFixed(2)}Hz`, onInput: set("rate") }),
+        slider({ label: "DEPTH", min: 0, max: 1, step: 0.01, value: slot.depth,
+          format: pct, onInput: set("depth") }),
+        numberSelect("SHAPE", "shape", [
+          { value: 0, label: "SINE" }, { value: 1, label: "TRIANGLE" },
+          { value: 2, label: "SQUARE" },
+        ]),
+        slider({ label: "MIX", min: 0, max: 1, step: 0.01, value: slot.mix,
+          format: pct, onInput: set("mix") }),
+      );
+    } else if (slot.type === "transient") {
+      root.append(
+        slider({ label: "ATTACK", min: 0, max: 1, step: 0.01, value: slot.attack,
+          format: pct, onInput: set("attack") }),
+        slider({ label: "BODY", min: 0, max: 1, step: 0.01, value: slot.body,
+          format: pct, onInput: set("body") }),
+        slider({ label: "PUNCH", min: 0, max: 1, step: 0.01, value: slot.punch,
+          format: pct, onInput: set("punch") }),
+        slider({ label: "DIRT", min: 0, max: 1, step: 0.01, value: slot.dirt,
+          format: pct, onInput: set("dirt") }),
+      );
+    }
   }
 
   // ---- Momentary performance FX ------------------------------------------

@@ -75,6 +75,7 @@ export class AudioEngine {
 
   private started = false;
   private crushReady = false;
+  private creativeReady = false;
 
   /** UI hook: fired when the playhead reaches a step (driven by the UI's rAF loop). */
   onVisualStep: (step: number) => void = () => {};
@@ -103,13 +104,20 @@ export class AudioEngine {
     }
     await this.ctx.resume();
 
-    // Load the bitcrusher worklet once; each bank chain gets its own node.
+    // Load worklets once; every bank creates only the nodes it actually uses.
     try {
       const url = new URL("worklets/bitcrusher.js", document.baseURI).href;
       await this.ctx.audioWorklet.addModule(url);
       this.crushReady = true;
     } catch (err) {
       console.warn("Bitcrusher worklet unavailable, continuing without it.", err);
+    }
+    try {
+      const url = new URL("worklets/creative-fx.js", document.baseURI).href;
+      await this.ctx.audioWorklet.addModule(url);
+      this.creativeReady = true;
+    } catch (err) {
+      console.warn("Creative FX worklet unavailable, using native fallbacks.", err);
     }
 
     // All bank chains sum here, then through a single global limiter so the
@@ -143,9 +151,29 @@ export class AudioEngine {
     }
   }
 
+  /** Create a creative processor lazily when a rack slot needs one. */
+  private makeCreativeNode(): AudioWorkletNode | null {
+    if (!this.creativeReady) return null;
+    try {
+      return new AudioWorkletNode(this.ctx, "creative-fx");
+    } catch {
+      return null;
+    }
+  }
+
+  private makeLiveChain(): FxChain {
+    return new FxChain(
+      this.ctx,
+      this.makeCrushNode(),
+      this.outputBus,
+      () => this.makeCreativeNode(),
+    );
+  }
+
   /** Construct a bank of pads/tracks from a config (used at init + when adding). */
   private buildBank(bankCfg: BankConfig): Bank {
-    const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
+    const chain = this.makeLiveChain();
+    chain.setTempo(this.scheduler.bpm);
     chain.setDelayTime((60 / this.scheduler.bpm) * 0.75);
     const bank: Bank = {
       name: bankCfg.name,
@@ -236,10 +264,14 @@ export class AudioEngine {
     return this.scheduler.swing;
   }
 
-  /** Sync every bank's delay bus to a dotted-eighth of the current tempo. */
+  /** Sync every bank's send delay and tempo-aware inserts. */
   private updateDelayTime() {
-    const dottedEighth = (60 / this.scheduler.bpm) * 0.75;
-    for (const bank of this.banks) bank.chain.setDelayTime(dottedEighth);
+    const bpm = this.scheduler.bpm;
+    const dottedEighth = (60 / bpm) * 0.75;
+    for (const bank of this.banks) {
+      bank.chain.setTempo(bpm);
+      bank.chain.setDelayTime(dottedEighth);
+    }
   }
 
   /** The FX chain for a given bank (scene). */
@@ -446,8 +478,11 @@ export class AudioEngine {
     for (const bank of this.banks) {
       if (bank.muted) continue;
       const offChain = new FxChain(offline, null, offBus);
-      offChain.settings = { ...bank.chain.settings };
+      offChain.settings = {
+        slots: bank.chain.settings.slots.map((slot) => ({ ...slot })),
+      };
       offChain.applySettings();
+      offChain.setTempo(this.scheduler.bpm);
       offChain.setDelayTime((60 / this.scheduler.bpm) * 0.75);
 
       for (const srcTrack of bank.tracks) {
@@ -511,8 +546,16 @@ export class AudioEngine {
     // Clear existing banks and rebuild from the project data.
     this.banks.length = 0;
     for (const bankData of project.banks) {
-      const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
-      chain.settings = { ...defaultFxSettings(), ...(bankData.fx ?? {}) };
+      const chain = this.makeLiveChain();
+      const importedSlots = Array.isArray(bankData.fx?.slots) ? bankData.fx.slots : [];
+      chain.settings = {
+        // Projects from the old fixed panel had no slots; they open with an
+        // empty rack instead of leaking obsolete flat settings into the graph.
+        slots: defaultFxSettings().slots.map((fallback, index) => ({
+          ...fallback,
+          ...(importedSlots[index] ?? {}),
+        })),
+      };
       chain.applySettings();
       const bank: Bank = {
         name: bankData.name,
@@ -551,7 +594,9 @@ export class AudioEngine {
         name: bank.name,
         kind: bank.kind,
         muted: bank.muted,
-        fx: { ...bank.chain.settings },
+        fx: {
+          slots: bank.chain.settings.slots.map((slot) => ({ ...slot })),
+        },
         tracks: bank.tracks.map((t) => ({
           settings: { ...t.settings },
           steps: t.steps.map((s) => ({ ...s })),
@@ -579,8 +624,10 @@ export class AudioEngine {
     this.banks.length = 0;
 
     for (const bs of snap.banks) {
-      const chain = new FxChain(this.ctx, this.makeCrushNode(), this.outputBus);
-      chain.settings = { ...bs.fx };
+      const chain = this.makeLiveChain();
+      chain.settings = {
+        slots: bs.fx.slots.map((slot) => ({ ...slot })),
+      };
       chain.applySettings();
       const bank: Bank = {
         name: bs.name,
