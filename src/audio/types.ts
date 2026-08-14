@@ -6,6 +6,14 @@ export type FilterType = "lowpass" | "highpass" | "bandpass";
 export type PlayingLayout = "keys" | "scale" | "chords";
 export type ChordSubmode = "diatonic" | "free";
 
+export interface MelodicLoopEvent {
+  midi: number;
+  /** Start and duration measured in sequencer sixteenth-note steps. */
+  startStep: number;
+  durationSteps: number;
+  velocity: number;
+}
+
 /** Persisted performance state for one sample instrument/pad. */
 export interface MelodicPerformanceSettings {
   /** MIDI note at which the sample plays at its original speed. */
@@ -21,6 +29,8 @@ export interface MelodicPerformanceSettings {
   chordVoicing: ChordVoicing;
   chordStrumMs: number;
   polyphony: number;
+  melodicLoopBars: number;
+  melodicLoopEnabled: boolean;
 }
 
 /** A step in a track's sequence. */
@@ -84,6 +94,8 @@ export function defaultTrackSettings(name: string): TrackSettings {
     chordVoicing: "close",
     chordStrumMs: 0,
     polyphony: 8,
+    melodicLoopBars: 2,
+    melodicLoopEnabled: false,
     attack: 0.001,
     release: 0.25,
     chokeGroup: 0,

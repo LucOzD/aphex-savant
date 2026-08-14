@@ -261,6 +261,64 @@ main {
 .layout-tabs .ctrl {
   min-height: 46px;
 }
+.key-loop {
+  padding: 8px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.key-loop.recording {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 92, 57, 0.35) inset;
+}
+.key-loop.looping {
+  border-color: var(--play);
+}
+.loop-actions {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 1fr) auto;
+  gap: 6px;
+}
+.loop-length {
+  display: grid;
+  grid-template-columns: 38px minmax(58px, auto) 38px;
+  align-items: stretch;
+  gap: 3px;
+}
+.loop-length .ctrl {
+  min-height: 44px;
+  padding: 6px;
+  font-size: 20px;
+}
+.loop-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.loop-record.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.loop-clear {
+  padding-inline: 9px !important;
+}
+.loop-status {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.key-loop.recording .loop-status {
+  color: var(--accent);
+}
+.key-loop.looping .loop-status {
+  color: var(--play);
+}
 .melodic-toolbar {
   display: grid;
   grid-template-columns: minmax(66px, 0.7fr) minmax(120px, 1.5fr) auto 46px;

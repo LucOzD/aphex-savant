@@ -50,6 +50,11 @@ export class MelodicPerformance {
   constructor(engine: AudioEngine, onStateChange: () => void) {
     this.engine = engine;
     this.onStateChange = onStateChange;
+    this.engine.onMelodicLoopChange = (track, change) => {
+      if (track !== this.targetTrack) return;
+      this.render();
+      if (change !== "started") this.onStateChange();
+    };
     this.panel = el("div", { class: "panel melodic-panel" });
     this.element = el("section", { class: "melodic-section" }, [
       el("h2", { class: "section-title" }, ["Melodic sample performer"]),
@@ -67,7 +72,10 @@ export class MelodicPerformance {
   setTarget(bankIndex: number, padIndex: number) {
     const bank = this.engine.banks[bankIndex];
     const nextTrack = bank?.tracks[padIndex] ?? null;
-    if (nextTrack !== this.targetTrack) this.panic();
+    if (nextTrack !== this.targetTrack) {
+      if (this.targetTrack) this.engine.cancelMelodicLoopRecording(this.targetTrack);
+      this.panic();
+    }
     this.bankIndex = bankIndex;
     this.padIndex = padIndex;
     this.targetTrack = nextTrack;
@@ -103,7 +111,7 @@ export class MelodicPerformance {
       tabs.append(button);
     });
 
-    this.panel.append(tabs, this.buildToolbar());
+    this.panel.append(tabs, this.buildLoopControls(), this.buildToolbar());
     if (this.advancedOpen) this.panel.append(this.buildAdvanced());
 
     const surface = el("div", { class: "instrument-surface" });
@@ -117,6 +125,60 @@ export class MelodicPerformance {
       ]));
     }
     this.panel.append(surface);
+  }
+
+  private buildLoopControls(): HTMLElement {
+    const track = this.targetTrack!;
+    const settings = track.settings;
+    const recording = this.engine.isMelodicLoopRecording(track);
+    const hasLoop = settings.melodicLoopEnabled && track.melodicLoopEvents.length > 0;
+
+    const down = el("button", { class: "ctrl", "aria-label": "One fewer loop bar" }, ["−"]) as HTMLButtonElement;
+    const up = el("button", { class: "ctrl", "aria-label": "One more loop bar" }, ["+"]) as HTMLButtonElement;
+    const bars = el("strong", { class: "loop-bars" }, [`${settings.melodicLoopBars} BAR${settings.melodicLoopBars === 1 ? "" : "S"}`]);
+    down.disabled = recording || hasLoop || settings.melodicLoopBars <= 1;
+    up.disabled = recording || hasLoop || settings.melodicLoopBars >= 8;
+    down.addEventListener("click", () => this.changeLoopBars(-1));
+    up.addEventListener("click", () => this.changeLoopBars(1));
+
+    const record = el("button", {
+      class: `ctrl loop-record${recording ? " active" : ""}`,
+    }, [recording ? "■ CANCEL" : hasLoop ? "● RE-RECORD" : "● RECORD LOOP"]) as HTMLButtonElement;
+    record.disabled = !track.buffer;
+    record.addEventListener("click", () => {
+      if (recording) {
+        this.engine.cancelMelodicLoopRecording(track);
+      } else {
+        this.panic();
+        this.engine.startMelodicLoopRecording(this.bankIndex, this.padIndex, settings.melodicLoopBars);
+      }
+    });
+
+    const clear = el("button", { class: "ctrl loop-clear" }, ["CLEAR"]) as HTMLButtonElement;
+    clear.disabled = !recording && !hasLoop;
+    clear.addEventListener("click", () => this.engine.clearMelodicLoop(track));
+
+    const status = recording
+      ? `Recording ${settings.melodicLoopBars} bar${settings.melodicLoopBars === 1 ? "" : "s"}… play now`
+      : hasLoop
+        ? `Looping ${track.melodicLoopEvents.length} note${track.melodicLoopEvents.length === 1 ? "" : "s"}`
+        : "Choose a length, record, then it loops automatically.";
+
+    return el("div", { class: `key-loop${recording ? " recording" : hasLoop ? " looping" : ""}` }, [
+      el("div", { class: "loop-actions" }, [
+        el("div", { class: "loop-length" }, [down, bars, up]),
+        record,
+        clear,
+      ]),
+      el("div", { class: "loop-status", "aria-live": "polite" }, [status]),
+    ]);
+  }
+
+  private changeLoopBars(delta: number) {
+    const settings = this.targetTrack!.settings;
+    settings.melodicLoopBars = Math.max(1, Math.min(8, settings.melodicLoopBars + delta));
+    this.render();
+    this.onStateChange();
   }
 
   private buildToolbar(): HTMLElement {
@@ -143,7 +205,7 @@ export class MelodicPerformance {
       "aria-label": "Octave up",
     }, ["+"]) as HTMLButtonElement;
     down.disabled = settings.performanceOctave <= 1;
-    up.disabled = settings.performanceOctave >= 6;
+    up.disabled = settings.performanceOctave >= 5;
     down.addEventListener("click", () => this.changeOctave(-1));
     up.addEventListener("click", () => this.changeOctave(1));
     const octave = el("div", { class: "octave-readout", "aria-label": `Octave ${settings.performanceOctave}` }, [

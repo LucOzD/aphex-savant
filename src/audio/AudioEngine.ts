@@ -6,7 +6,7 @@ import { decodeAudio, sliceByTransients } from "./sampleUtils.ts";
 import { audioBufferToWav } from "./wavEncode.ts";
 import { Recorder } from "./Recorder.ts";
 import { SampleLibrary, type SampleEntry } from "./SampleLibrary.ts";
-import type { Step, TrackSettings } from "./types.ts";
+import type { MelodicLoopEvent, Step, TrackSettings } from "./types.ts";
 
 export type BankKind = "synth" | "sample";
 
@@ -27,6 +27,24 @@ export interface NoteHandle {
   voiceId: VoiceId;
 }
 
+type MelodicLoopChange = "started" | "completed" | "cancelled" | "cleared";
+
+interface PendingLoopNote {
+  midi: number;
+  velocity: number;
+  startedAt: number;
+  endedAt?: number;
+}
+
+interface MelodicLoopRecording {
+  track: Track;
+  lengthSteps: number;
+  stepDuration: number;
+  startAbsStep: number | null;
+  startTime: number | null;
+  pending: Map<VoiceId, PendingLoopNote>;
+}
+
 /** A point-in-time copy of all editable state, for undo/redo. */
 export interface EngineSnapshot {
   bpm: number;
@@ -39,6 +57,7 @@ export interface EngineSnapshot {
     tracks: {
       settings: TrackSettings;
       steps: Step[];
+      melodicLoopEvents: MelodicLoopEvent[];
       length: number;
       /** Shared by reference — snapshots never copy audio data. */
       buffer: AudioBuffer | null;
@@ -60,8 +79,8 @@ export interface Bank {
 const DEFAULT_CONFIG: EngineConfig = {
   steps: 16,
   banks: [
-    { name: "DRUMS 1", pads: 16, kind: "synth" },
-    { name: "SAMPLES", pads: 16, kind: "sample" },
+    { name: "DRUMS", pads: 16, kind: "synth" },
+    { name: "KEYS", pads: 16, kind: "sample" },
   ],
 };
 
@@ -83,8 +102,12 @@ export class AudioEngine {
   private crushReady = false;
   private creativeReady = false;
 
-  /** UI hook: fired when the playhead reaches a step (driven by the UI's rAF loop). */
+  /** UI hooks for transport and live melodic-loop state. */
   onVisualStep: (step: number) => void = () => {};
+  onTransportChange: (playing: boolean) => void = () => {};
+  onMelodicLoopChange: (track: Track, change: MelodicLoopChange) => void = () => {};
+
+  private melodicLoopRecording: MelodicLoopRecording | null = null;
 
   /**
    * Steps that have been scheduled but not yet reached by the audio clock.
@@ -209,11 +232,11 @@ export class AudioEngine {
     return this.banks.length - 1;
   }
 
-  /** Add a fresh sample bank. Returns its bank index. */
+  /** Add a fresh melodic keys bank backed by user samples. */
   addSampleBank(pads = 16): number {
     if (!this.started) return -1;
     const count = this.banks.filter((b) => b.kind === "sample").length + 1;
-    this.banks.push(this.buildBank({ name: `SAMPLES ${count}`, pads, kind: "sample" }));
+    this.banks.push(this.buildBank({ name: `KEYS ${count}`, pads, kind: "sample" }));
     return this.banks.length - 1;
   }
 
@@ -222,7 +245,10 @@ export class AudioEngine {
     if (this.banks.length <= 1) return false;
     if (index < 0 || index >= this.banks.length) return false;
     const [removed] = this.banks.splice(index, 1);
-    removed.tracks.forEach((track) => track.dispose());
+    removed.tracks.forEach((track) => {
+      this.cancelMelodicLoopRecording(track);
+      track.dispose();
+    });
     return true;
   }
 
@@ -243,13 +269,19 @@ export class AudioEngine {
 
   play() {
     if (!this.started) return;
+    if (!this.scheduler.isRunning) {
+      this.allTracks.forEach((track) => (track.melodicLoopPhaseOffset = 0));
+    }
     this.scheduler.start();
+    this.onTransportChange(true);
   }
 
   stop() {
     this.scheduler.stop();
+    this.cancelMelodicLoopRecording();
     this.visualQueue.length = 0;
     this.onVisualStep(-1);
+    this.onTransportChange(false);
   }
 
   get isPlaying(): boolean {
@@ -307,15 +339,35 @@ export class AudioEngine {
     const bank = this.banks[bankIndex];
     const track = bank?.tracks[padIndex];
     if (!track || bank.muted) return null;
-    const voiceId = track.noteOnMidi(
-      this.ctx.currentTime + Math.max(0, delaySeconds),
-      Math.max(0, Math.min(127, Math.round(midi))),
-      velocity,
-    );
-    return voiceId === null ? null : { track, voiceId };
+    const startedAt = this.ctx.currentTime + Math.max(0, delaySeconds);
+    const note = Math.max(0, Math.min(127, Math.round(midi)));
+    const voiceId = track.noteOnMidi(startedAt, note, velocity);
+    if (voiceId === null) return null;
+    if (this.melodicLoopRecording?.track === track) {
+      this.melodicLoopRecording.pending.set(voiceId, {
+        midi: note,
+        velocity,
+        startedAt,
+      });
+    }
+    return { track, voiceId };
   }
 
   noteOff(handle: NoteHandle, when = this.ctx.currentTime) {
+    const recording = this.melodicLoopRecording;
+    const pending = recording?.track === handle.track
+      ? recording.pending.get(handle.voiceId)
+      : undefined;
+    if (pending && recording) {
+      if (when < pending.startedAt - 0.001) {
+        recording.pending.delete(handle.voiceId);
+      } else {
+        pending.endedAt = when;
+        if (recording.startTime !== null) {
+          this.commitRecordedNote(recording, handle.voiceId, pending, when);
+        }
+      }
+    }
     handle.track.noteOff(handle.voiceId, when);
   }
 
@@ -327,20 +379,132 @@ export class AudioEngine {
     }
   }
 
+  startMelodicLoopRecording(bankIndex: number, padIndex: number, bars: number): boolean {
+    const track = this.banks[bankIndex]?.tracks[padIndex];
+    if (!track?.buffer) return false;
+    this.cancelMelodicLoopRecording();
+    track.settings.melodicLoopBars = Math.max(1, Math.min(8, Math.round(bars)));
+    track.settings.melodicLoopEnabled = false;
+    track.melodicLoopEvents = [];
+    this.melodicLoopRecording = {
+      track,
+      lengthSteps: track.settings.melodicLoopBars * 16,
+      stepDuration: this.scheduler.stepDuration,
+      startAbsStep: null,
+      startTime: null,
+      pending: new Map(),
+    };
+    if (!this.isPlaying) this.play();
+    this.onMelodicLoopChange(track, "started");
+    return true;
+  }
+
+  cancelMelodicLoopRecording(track?: Track) {
+    const recording = this.melodicLoopRecording;
+    if (!recording || (track && recording.track !== track)) return;
+    this.melodicLoopRecording = null;
+    recording.track.settings.melodicLoopEnabled = false;
+    recording.track.melodicLoopEvents = [];
+    this.onMelodicLoopChange(recording.track, "cancelled");
+  }
+
+  clearMelodicLoop(track: Track) {
+    if (this.melodicLoopRecording?.track === track) this.melodicLoopRecording = null;
+    track.melodicLoopEvents = [];
+    track.settings.melodicLoopEnabled = false;
+    this.onMelodicLoopChange(track, "cleared");
+  }
+
+  isMelodicLoopRecording(track: Track): boolean {
+    return this.melodicLoopRecording?.track === track;
+  }
+
   private handleStep(absStep: number, time: number) {
+    const recording = this.melodicLoopRecording;
+    if (recording?.startAbsStep === null) {
+      recording.startAbsStep = absStep;
+      recording.startTime = time;
+      recording.track.melodicLoopPhaseOffset = absStep;
+      for (const [voiceId, pending] of [...recording.pending]) {
+        if (pending.endedAt !== undefined) {
+          this.commitRecordedNote(recording, voiceId, pending, pending.endedAt);
+        }
+      }
+    } else if (
+      recording
+      && recording.startAbsStep !== null
+      && absStep >= recording.startAbsStep + recording.lengthSteps
+    ) {
+      this.finishMelodicLoopRecording(time);
+    }
+
     for (const bank of this.banks) {
       if (bank.muted) continue;
       for (const track of bank.tracks) {
         const len = track.length;
         const local = ((absStep % len) + len) % len;
-        const s = track.steps[local];
-        if (!s || !s.on) continue;
-        if (s.probability < 1 && Math.random() > s.probability) continue;
-        track.trigger(time, s.pitch, s.velocity);
+        const step = track.steps[local];
+        if (step?.on && (step.probability >= 1 || Math.random() <= step.probability)) {
+          track.trigger(time, step.pitch, step.velocity);
+        }
+
+        if (track.settings.melodicLoopEnabled && track.melodicLoopEvents.length > 0) {
+          const loopLength = Math.max(16, track.settings.melodicLoopBars * 16);
+          const loopStep = ((absStep - track.melodicLoopPhaseOffset) % loopLength + loopLength) % loopLength;
+          for (const event of track.melodicLoopEvents) {
+            const eventStep = Math.floor(event.startStep);
+            if (eventStep !== loopStep) continue;
+            const startAt = time + (event.startStep - eventStep) * this.scheduler.stepDuration;
+            const voiceId = track.noteOnMidi(startAt, event.midi, event.velocity);
+            if (voiceId !== null) {
+              track.noteOff(
+                voiceId,
+                startAt + Math.max(0.05, event.durationSteps) * this.scheduler.stepDuration,
+              );
+            }
+          }
+        }
       }
     }
     // Queue the highlight; the UI drains it against the audio clock.
     this.visualQueue.push({ step: absStep, time });
+  }
+
+  private commitRecordedNote(
+    recording: MelodicLoopRecording,
+    voiceId: VoiceId,
+    pending: PendingLoopNote,
+    endedAt: number,
+  ) {
+    if (recording.startTime === null) return;
+    const stepDuration = recording.stepDuration;
+    const startStep = Math.max(0, Math.min(
+      recording.lengthSteps - 0.001,
+      (pending.startedAt - recording.startTime) / stepDuration,
+    ));
+    const endStep = Math.max(startStep + 0.05, Math.min(
+      recording.lengthSteps,
+      (endedAt - recording.startTime) / stepDuration,
+    ));
+    recording.track.melodicLoopEvents.push({
+      midi: pending.midi,
+      velocity: pending.velocity,
+      startStep,
+      durationSteps: Math.max(0.05, endStep - startStep),
+    });
+    recording.pending.delete(voiceId);
+  }
+
+  private finishMelodicLoopRecording(endTime: number) {
+    const recording = this.melodicLoopRecording;
+    if (!recording) return;
+    for (const [voiceId, pending] of [...recording.pending]) {
+      this.commitRecordedNote(recording, voiceId, pending, endTime);
+    }
+    recording.track.melodicLoopEvents.sort((a, b) => a.startStep - b.startStep);
+    recording.track.settings.melodicLoopEnabled = recording.track.melodicLoopEvents.length > 0;
+    this.melodicLoopRecording = null;
+    this.onMelodicLoopChange(recording.track, "completed");
   }
 
   /**
@@ -492,8 +656,11 @@ export class AudioEngine {
    * repetitions of the longest track length. Returns a Blob you can download.
    */
   async exportWav(bars = 4): Promise<Blob> {
-    // Find longest loop across all tracks to know one "cycle".
-    const maxLen = Math.max(...this.allTracks.map((t) => t.length));
+    // Include both drum sequence lengths and recorded key-loop lengths.
+    const maxLen = Math.max(...this.allTracks.map((track) => Math.max(
+      track.length,
+      track.settings.melodicLoopEnabled ? track.settings.melodicLoopBars * 16 : 0,
+    )));
     const totalSteps = maxLen * bars;
     const stepDur = 60 / this.scheduler.bpm / 4;
     const totalSeconds = totalSteps * stepDur + 2; // extra tail for reverb
@@ -536,6 +703,23 @@ export class AudioEngine {
           if (s.probability < 1 && Math.random() > s.probability) continue;
           t.trigger(step * stepDur + 0.01, s.pitch, s.velocity);
         }
+        if (srcTrack.settings.melodicLoopEnabled) {
+          const loopLength = Math.max(16, srcTrack.settings.melodicLoopBars * 16);
+          for (let cycleStart = 0; cycleStart < totalSteps; cycleStart += loopLength) {
+            for (const event of srcTrack.melodicLoopEvents) {
+              const startAt = (cycleStart + event.startStep) * stepDur + 0.01;
+              if (startAt >= totalSeconds) continue;
+              const voiceId = t.trigger(
+                startAt,
+                event.midi - t.settings.sampleRootMidi,
+                event.velocity,
+              );
+              if (voiceId !== null) {
+                t.noteOff(voiceId, startAt + event.durationSteps * stepDur);
+              }
+            }
+          }
+        }
       }
     }
 
@@ -561,6 +745,7 @@ export class AudioEngine {
         tracks: bank.tracks.map((t) => ({
           settings: t.settings,
           steps: t.steps.slice(0, t.length),
+          melodicLoopEvents: t.melodicLoopEvents,
           length: t.length,
           // Encode sample data as base64 WAV if present.
           sampleData: t.buffer ? arrayBufferToBase64(audioBufferToWav(t.buffer)) : null,
@@ -582,6 +767,7 @@ export class AudioEngine {
     this.swing = project.swing ?? 0;
 
     // Clear existing banks and rebuild from the project data.
+    this.melodicLoopRecording = null;
     for (const bank of this.banks) bank.tracks.forEach((track) => track.dispose());
     this.banks.length = 0;
     for (const bankData of project.banks) {
@@ -597,7 +783,9 @@ export class AudioEngine {
       };
       chain.applySettings();
       const bank: Bank = {
-        name: bankData.name,
+        name: bankData.kind === "sample" && /^SAMPLES(?:\s|$)/i.test(bankData.name)
+          ? bankData.name.replace(/^SAMPLES/i, "KEYS")
+          : bankData.name,
         kind: bankData.kind,
         tracks: [],
         muted: bankData.muted ?? false,
@@ -606,6 +794,9 @@ export class AudioEngine {
       for (const td of bankData.tracks) {
         const track = new Track(this.ctx, chain, td.length, td.settings);
         track.steps = td.steps;
+        track.melodicLoopEvents = Array.isArray(td.melodicLoopEvents)
+          ? td.melodicLoopEvents.map((event: MelodicLoopEvent) => ({ ...event }))
+          : [];
         track.setLength(td.length);
         if (td.sampleData) {
           const wav = base64ToArrayBuffer(td.sampleData);
@@ -639,6 +830,7 @@ export class AudioEngine {
         tracks: bank.tracks.map((t) => ({
           settings: { ...t.settings },
           steps: t.steps.map((s) => ({ ...s })),
+          melodicLoopEvents: t.melodicLoopEvents.map((event) => ({ ...event })),
           length: t.length,
           buffer: t.buffer,
           region: t.region ? ([...t.region] as [number, number]) : null,
@@ -651,6 +843,7 @@ export class AudioEngine {
   restore(snap: EngineSnapshot) {
     this.bpm = snap.bpm;
     this.swing = snap.swing;
+    this.melodicLoopRecording = null;
 
     // Tear down existing voices/chains so undo never leaves hanging notes.
     for (const bank of this.banks) {
@@ -679,6 +872,7 @@ export class AudioEngine {
       for (const ts of bs.tracks) {
         const track = new Track(this.ctx, chain, ts.length, ts.settings);
         track.steps = ts.steps.map((s) => ({ ...s }));
+        track.melodicLoopEvents = ts.melodicLoopEvents.map((event) => ({ ...event }));
         track.setLength(ts.length);
         track.setBuffer(ts.buffer, ts.region);
         bank.tracks.push(track);

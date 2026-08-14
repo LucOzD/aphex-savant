@@ -28,6 +28,7 @@ export class App {
   private bankBtns: HTMLButtonElement[] = [];
   private bankRow!: HTMLElement;
   private padGrid!: HTMLElement;
+  private padTitle!: HTMLElement;
   private padEls: HTMLButtonElement[] = [];
   private seqControls!: HTMLElement;
   private stepGrid!: HTMLElement;
@@ -154,16 +155,15 @@ export class App {
 
   private buildTopbar(): HTMLElement {
     const playBtn = el("button", { class: "ctrl play" }, ["▶"]) as HTMLButtonElement;
+    const syncPlayButton = (playing: boolean) => {
+      playBtn.textContent = playing ? "■" : "▶";
+      playBtn.classList.toggle("on", playing);
+    };
+    this.engine.onTransportChange = syncPlayButton;
+    syncPlayButton(this.engine.isPlaying);
     playBtn.addEventListener("click", () => {
-      if (this.engine.isPlaying) {
-        this.engine.stop();
-        playBtn.textContent = "▶";
-        playBtn.classList.remove("on");
-      } else {
-        this.engine.play();
-        playBtn.textContent = "■";
-        playBtn.classList.add("on");
-      }
+      if (this.engine.isPlaying) this.engine.stop();
+      else this.engine.play();
     });
 
     const tempo = slider({
@@ -205,7 +205,7 @@ export class App {
   private buildBankSwitcher(): HTMLElement {
     this.bankRow = el("div", { class: "row" });
     const section = el("section", {}, [
-      el("h2", { class: "section-title" }, ["Banks — separate sequencers"]),
+      el("h2", { class: "section-title" }, ["Drums / Keys — separate tracks"]),
       this.bankRow,
     ]);
     this.renderBankSwitcher();
@@ -240,7 +240,7 @@ export class App {
       this.bankRow.append(btn);
     });
 
-    const addBtn = el("button", { class: "ctrl" }, ["+ Drum machine"]) as HTMLButtonElement;
+    const addBtn = el("button", { class: "ctrl" }, ["+ Drums"]) as HTMLButtonElement;
     addBtn.addEventListener("click", () => {
       const idx = this.engine.addDrumBank();
       if (idx < 0) return;
@@ -248,7 +248,7 @@ export class App {
       this.selectBank(idx, true);
       this.commit();
     });
-    const addSampBtn = el("button", { class: "ctrl" }, ["+ Sample bank"]) as HTMLButtonElement;
+    const addSampBtn = el("button", { class: "ctrl" }, ["+ Keys"]) as HTMLButtonElement;
     addSampBtn.addEventListener("click", () => {
       const idx = this.engine.addSampleBank();
       if (idx < 0) return;
@@ -327,14 +327,18 @@ export class App {
 
   private buildPads(): HTMLElement {
     this.padGrid = el("div", { class: "pads" });
+    this.padTitle = el("h2", { class: "section-title" }, ["Drum pads"]);
     return el("section", {}, [
-      el("h2", { class: "section-title" }, ["Pads — tap to play, selects pad"]),
+      this.padTitle,
       this.padGrid,
     ]);
   }
 
   private renderPads() {
     this.padGrid.innerHTML = "";
+    this.padTitle.textContent = this.bank()?.kind === "sample"
+      ? "Keys instruments — select a sample"
+      : "Drum pads — tap to play";
     this.padEls = [];
     const tracks = this.bank()?.tracks ?? [];
     tracks.forEach((track, i) => {

@@ -17,10 +17,10 @@ us start audio (especially on iOS).
 
 ## What works today
 
-- **Banks (scenes)** you switch between, each an independent sequencer with its
-  own **16 pads** and its **own FX chain**. Start with a DRUMS bank (built-in
-  synth kit, makes noise immediately) and a SAMPLES bank. Add more of either with
-  **+ Drum machine** / **+ Sample bank**. All banks play together.
+- **Drums / Keys tabs (banks)**, each with its own tracks and FX chain. Start
+  with DRUMS (the built-in synth kit) and KEYS (user sample instruments). Add
+  more with **+ Drums** / **+ Keys**; all banks stay tempo-locked and play
+  together. Older SAMPLES banks are renamed to KEYS when projects open.
 - **Long-press a bank button** for its context menu: mute, rename, delete.
 - **Tap pads** to finger-drum; tapping also selects a pad for editing. Pads can
   be renamed in the sound panel.
@@ -39,8 +39,10 @@ us start audio (especially on iOS).
   and CHORDS** layouts. Scale mode provides 20 scales × 12 roots on a 4×4 pad
   grid. Chords supports scale-derived triads/7ths/9ths and 20 free chord
   qualities, inversions, open voicing, and cancellable tempo-safe strums.
-  Performance state is saved per sample pad; playback uses an 8-voice default
-  limit through the pad's existing shared effects path.
+  Performance state is saved per instrument; playback uses an 8-voice default
+  limit through the instrument's existing shared effects path. Choose a 1–8 bar
+  length and press **RECORD LOOP** to capture played notes and durations; after
+  that many bars, the take loops automatically with the main transport.
 - **Per-scene FX rack**: three user-assignable insert slots, ordered left to
   right. Choose from filter, drive, crusher, phaser, chorus, **Grain, Resonate,
   Tape, Repeater, Space, Fold, Dub, Formant, Motion, and Transient**, each with

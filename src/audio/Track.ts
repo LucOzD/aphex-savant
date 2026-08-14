@@ -1,6 +1,6 @@
 import type { FxChain } from "./FxChain.ts";
 import { semitonesToRate } from "./dsp.ts";
-import { defaultTrackSettings, type Step, type TrackSettings } from "./types.ts";
+import { defaultTrackSettings, type MelodicLoopEvent, type Step, type TrackSettings } from "./types.ts";
 import { defaultStep } from "./types.ts";
 
 export type VoiceId = number;
@@ -29,6 +29,11 @@ export class Track {
 
   /** Loop length in steps. */
   length: number;
+
+  /** Live-recorded melodic notes, measured in sixteenth-note steps. */
+  melodicLoopEvents: MelodicLoopEvent[] = [];
+  /** Runtime phase offset used when recording starts mid-transport. */
+  melodicLoopPhaseOffset = 0;
 
   private readonly ctx: BaseAudioContext;
 
